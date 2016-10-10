@@ -1,18 +1,78 @@
 library(zoo)
+library(TTR)
+#library(doParallel)
+options(scipen=999) #disable scientific notation
+#options(scipen=0) #enable scientific notation
 
 #### PARAMETERS ####
+folder="20160923"
+Strategy="value01"
+setwd(paste("/home/psharma/Seafile/servers/FundamentalData/",folder,sep=""))
 InitialCapital = 1000000
 StrategyStartDate = "2011-07-01"
 DeployMonths = 12
-Return = 0.2
+Return = 0.1 
+MinMarketCap=0
 MinOrderValue = 10000
 path = "/home/psharma/Seafile/rfiles/daily/"
-Upside = 50
-RSIEntry=30
+Upside = 25 # In Percent
+RSIEntry=20
 RSIExit=80
+R2Fit=60 # In Percent
+Slope=10 # In Percent
 SingleLegTransactionCost=0.25 # In Percent
 
 #### FUNCTIONS ####
+
+xirr <- function(cf, dates) {
+  
+  # Secant method.
+  secant <- function(par, fn, tol=1.e-07, itmax = 100, trace=FALSE, ...) { 
+    # par = a starting vector with 2 starting values 
+    # fn = a function whose first argument is the variable of interest 
+    if (length(par) != 2) stop("You must specify a starting parameter vector of length 2") 
+    p.2 <- par[1] 
+    p.1 <- par[2] 
+    f <- rep(NA, length(par)) 
+    f[1] <- fn(p.1, ...) 
+    f[2] <- fn(p.2, ...) 
+    iter <- 1 
+    pchg <- abs(p.2 - p.1) 
+    fval <- f[2] 
+    if (trace) cat("par: ", par, "fval: ", f, "\n") 
+    while (pchg >= tol & abs(fval) > tol & iter <= itmax) { 
+      p.new <- p.2 - (p.2 - p.1) * f[2] / (f[2] - f[1]) 
+      pchg <- abs(p.new - p.2) 
+      fval <- ifelse(is.na(fn(p.new, ...)),1,fn(p.new, ...))
+      #      fval <- fn(p.new, ...) 
+      p.1 <- p.2 
+      p.2 <- p.new 
+      f[1] <- f[2] 
+      f[2] <- fval 
+      iter <- iter + 1 
+      if (trace) cat("par: ", p.new, "fval: ", fval, "\n") 
+    } 
+    list(par = p.new, value = fval, iter=iter) 
+  } 
+  
+  # Net present value.
+  npv <- function(irr, cashflow, times) sum(cashflow / (1 + irr)^times) 
+  
+  times <- as.numeric(difftime(dates, dates[1], units="days"))/365.24 
+  
+  r <- secant(par=c(0,0.1), fn=npv, cashflow=cf, times=times) 
+  
+  return(r$par)
+}
+
+
+NPV<-function(paym,pdates,IRR){
+  ptimes<-as.Date(pdates)-min(as.Date(pdates))
+  ptimes<-as.numeric(ptimes,units="days")/365.25
+  NPV<-sum(paym*(1+IRR)^{-ptimes})
+  NPV
+}
+
 slope <- function (x) {
   res <- (lm(log(x) ~ seq(1:length(x))))
   res$coefficients[2]
@@ -100,11 +160,29 @@ UpdateDF4Upside <- function(df4, settledate) {
         df4$UPSIDE[i] = trunc(df4$UPSIDE[i], 0)
         df4$UPSIDE[i] = as.numeric(df4$UPSIDE[i])
         df4$LATEST_SHARE_PRICE[i] = lastprice
+        df4$MCAP[i]=as.numeric(df4$COMMON_SHARE_OUTSTANDING_IN_MILLIONS[i])*lastprice/1000
       }
     }
   }
   df4
 }
+
+CashFlow <-function(portfolio,settledate){
+  vcash=rep(0,length(settledate))
+  for(p in 1:nrow(portfolio)){
+    index=which(settledate==as.Date(portfolio[p,'buydate'],tz="Asia/Kolkata"))
+    vcash[index]=vcash[index]-portfolio[p,'size']*portfolio[p,'buyprice']
+  }
+  for(p in 1:nrow(portfolio)){
+    if(!is.na(portfolio[p,'selldate'])){
+      index=which(settledate==as.Date(portfolio[p,'selldate'],tz="Asia/Kolkata"))
+      vcash[index]=vcash[index]+portfolio[p,'size']*portfolio[p,'sellprice']
+    }
+  }
+  vcash
+  
+}
+
 
 UpdatePortfolioBuy <-
   function(portfolio,
@@ -153,6 +231,7 @@ RealizedProfit = rep(NA_real_,DaysSinceStart)
 UnRealizedProfit = rep(NA_real_,DaysSinceStart)
 
 TargetPortfolioValue = rep(InitialCapital, DaysSinceStart)
+Cash = rep(0,DaysSinceStart)
 MonthsElapsed = sapply(StatementDate, MonthsSinceStart, as.Date(StrategyStartDate)) +
   1
 TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / 12, TargetPortfolioValue)
@@ -173,12 +252,22 @@ Portfolio = data.frame(
   stringsAsFactors = FALSE
 )
 
-
+#cl <- makeCluster(detectCores())
+#registerDoParallel(cl)
 for (d in 1:length(StatementDate)) {
   date = StatementDate[d]
   if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
     print(paste("Processing d:", d, sep = ""))
     #weekday
+    out = CalculateNPV(Portfolio, date, path)
+    npv = out[[1]]
+    Portfolio = out[[2]]
+    RealizedProfit[d]=out[[3]]
+    UnRealizedProfit[d]=out[[4]]
+    ActualPortfolioValue[d] = npv
+    Gap = TargetPortfolioValue[d] - npv
+    CurrentMonth = MonthsElapsed[d]
+    
     # Sell Portfolio
     if (nrow(Portfolio) > 0) {
       for (p in 1:nrow(Portfolio)) {
@@ -201,14 +290,6 @@ for (d in 1:length(StatementDate)) {
     
     #Now Scan for Buys
     
-    out = CalculateNPV(Portfolio, date, path)
-    npv = out[[1]]
-    Portfolio = out[[2]]
-    RealizedProfit[d]=out[[3]]
-    UnRealizedProfit[d]=out[[4]]
-    ActualPortfolioValue[d] = npv
-    Gap = TargetPortfolioValue[d] - npv
-    CurrentMonth = MonthsElapsed[d]
     if (nrow(Portfolio) > 0) {
       DistinctPurchasesThisMonth = length(unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")]))
     } else{
@@ -221,10 +302,11 @@ for (d in 1:length(StatementDate)) {
       shortlist <-
         df4[df4$UPSIDE > Upside &
               df4$DIVIDENDPAYOUTPERC > 10 &
-              df4$ROCE > 20 &
-              df4$AnnualizedSlope > 0 &
-              df4$r > 0.5 & df4$CurrentRSI < RSIEntry &
-              df4$FINDATE+90 <date,]
+              #df4$ROCE > 20 &
+              df4$AnnualizedSlope > Slope/100  &
+              df4$r > R2Fit/100 & df4$CurrentRSI < RSIEntry &
+              df4$FINDATE+90 < date &
+              df4$MCAP >MinMarketCap , ]
       #df4$FINDATE+90 < date covers scenarios where the FINANCIALS are forward looking
       existingSymbols <-
         unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")])
@@ -256,7 +338,7 @@ for (d in 1:length(StatementDate)) {
     
   }
 }
-
+#stopCluster(cl)
 Portfolio$profit = ifelse(
   !is.na(Portfolio$sellprice),
   Portfolio$size * (Portfolio$sellprice - Portfolio$buyprice) - SingleLegTransactionCost/100 * Portfolio$size *
@@ -272,7 +354,17 @@ UnRealizedProfit<-ifelse(is.na(UnRealizedProfit),0,UnRealizedProfit)
 RealizedProfit<-ifelse(RealizedProfit==0,NA_real_,RealizedProfit)
 RealizedProfit<-na.locf(RealizedProfit,na.rm = FALSE)
 RealizedProfit<-ifelse(is.na(RealizedProfit),0,RealizedProfit)
+maxdddate=which(RealizedProfit+UnRealizedProfit==min(RealizedProfit+UnRealizedProfit))
 
+cashflow<-CashFlow(Portfolio,StatementDate)
+cashflow[length(cashflow)]<-cashflow[length(cashflow)]+npv
+irr<-nlm(function(p){NPV(cashflow,StatementDate,p)^2},p=0.1)
+
+print(StatementDate[maxdddate])
+print(paste("Max Loss:",(RealizedProfit[maxdddate]+UnRealizedProfit[maxdddate])),sep="")
+print(paste("Prior Peak Equity:",max(RealizedProfit[1:maxdddate]+UnRealizedProfit[1:maxdddate])),sep="")
+plot(x=StatementDate,y=RealizedProfit+UnRealizedProfit,type='l')
+print(paste("xirr:",xirr(cashflow,StatementDate)*100,sep=""))
 # Buy Logic
 # For Each StatementDate
 # Calculate NPV
