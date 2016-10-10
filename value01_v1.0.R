@@ -15,14 +15,15 @@ options(scipen = 999) #disable scientific notation
 #options(scipen=0) #enable scientific notation
 
 #### PARAMETERS ####
-folder = "20160923"
+# folder = "20160923"
 Strategy = "value01"
 Database = 6
-setwd(paste(
-  "/home/psharma/Seafile/servers/FundamentalData/",
-  folder,
-  sep = ""
-))
+# setwd(paste(
+#   "/home/psharma/Seafile/servers/FundamentalData/",
+#   folder,
+#   sep = ""
+# ))
+setwd("/home/psharma/strategies/value/value01")
 InitialCapital = 2000000
 StrategyStartDate = "2016-10-01"
 DeployMonths = 12
@@ -267,7 +268,7 @@ TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / 12, TargetPor
 TargetPortfolioValue = TargetPortfolioValue * exp((CapitalGrowth/100) * (seq_along(TargetPortfolioValue) / 365))
 today<-adjust.previous(Sys.Date()-1, "india")
 #today = as.POSIXct(format(today), tz = "Asia/Kolkata")
-
+if(!file.exists("Portfolio.Rdata")){
   Portfolio = data.frame(
     scrip = as.character(),
     size = as.numeric(),
@@ -279,9 +280,29 @@ today<-adjust.previous(Sys.Date()-1, "india")
     mv = as.numeric(),
     month = as.numeric(),
     stringsAsFactors = FALSE
-  )
-  for (d in 1:length(StatementDate)) {
+  )  
+}
+
+StartingDate=as.Date(StrategyStartDate)
+if(nrow(Portfolio)>0){
+  for(row in 1:nrow(Portfolio)){
+    if(!is.na(Portfolio[row,'selldate'])){
+      tempDate=as.Date(Portfolio[row,'buydate'])
+      StartingDate=ifelse(tempDate>StartingDate,tempDate,StartingDate)
+    }else{
+      tempDate=as.Date(Portfolio[row,'buydate'])
+      StartingDate=ifelse(tempDate>StartingDate,tempDate,StartingDate)
+    }
+  }
+  StartingDate=adjust.next(as.Date(StartingDate)+1,"india")
+}
+
+
+StartingIndex=which(StatementDate==StartingDate)
+
+  for (d in StartingIndex:length(StatementDate)) {
     date = StatementDate[d]
+    print(paste("Processing Date:",date,sep=""))
     if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
       #print(paste("Processing d:", d, sep = ""))
       #weekday
@@ -451,8 +472,9 @@ today<-adjust.previous(Sys.Date()-1, "india")
     print(paste("winratio:",winratio, sep = ""))
     profit=sum(Portfolio$profit[complete.cases(Portfolio$profit)])
     Summary<-rbind(Summary,data.frame(irr=irr,winratio=winratio,profit=profit)) 
-    save(Portfolio,file=paste("Portfolio",run,".Rdata",sep=""))
-    save(cashflow,file=paste("cashflow",run,".Rdata",sep=""))
+   #save(Portfolio,file=paste("Portfolio",run,".Rdata",sep=""))
+   #save(cashflow,file=paste("cashflow",run,".Rdata",sep=""))
+   save(Portfolio,file="Portfolio.Rdata")
   }  
 
 
