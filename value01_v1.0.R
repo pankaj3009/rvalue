@@ -4,7 +4,7 @@ library(rredis)
 library(log4r)
 library(bizdays)
 library(RTrade)
-
+library(PerformanceAnalytics)
 holidays <- read.csv("holidays.csv")
 holidays <- as.Date(as.character(holidays[, 1]), "%Y%m%d")
 create.calendar(
