@@ -277,8 +277,10 @@ Summary = data.frame(
   winratio = as.numeric(),
   stringsAsFactors = FALSE
 )
-DaysSinceStart = as.numeric(Sys.Date() - as.Date(StrategyStartDate)) + 1
-StatementDate = seq.Date(from = as.Date(StrategyStartDate), to = Sys.Date(), 1)
+
+today <- adjust.previous(Sys.Date() - 1, "india")
+DaysSinceStart = as.numeric(today - as.Date(StrategyStartDate)) + 1
+StatementDate = seq.Date(from = as.Date(StrategyStartDate), to = today, 1)
 TargetPortfolioValue = numeric(DaysSinceStart)
 ActualPortfolioValue = numeric(DaysSinceStart)
 RealizedProfit = rep(NA_real_, DaysSinceStart)
@@ -294,7 +296,6 @@ TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / 12, TargetPor
 #Interest = cumsum(Interest)
 #TargetPortfolioValue = TargetPortfolioValue + Interest
 TargetPortfolioValue = TargetPortfolioValue * exp((CapitalGrowth / 100) * (seq_along(TargetPortfolioValue) / 365))
-today <- adjust.previous(Sys.Date() - 1, "india")
 #today = as.POSIXct(format(today), tz = "Asia/Kolkata")
 if (!file.exists("Portfolio.Rdata")) {
   Portfolio = data.frame(
