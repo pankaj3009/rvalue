@@ -8,8 +8,14 @@ options(scipen=999) #disable scientific notation
 folder="20160923"
 Strategy="value01"
 setwd(paste("/home/psharma/Seafile/servers/FundamentalData/",folder,sep=""))
-InitialCapital = 1000000
-StrategyStartDate = "2011-07-01"
+InitialCapital = 20000000
+#StrategyStartDate = "2011-07-01"
+StrategyStartDate = "2012-01-01"
+#StrategyEndDate = "2015-06-30"
+StrategyEndDate = "2015-12-31"
+#StrategyCloseAllDate = "2016-06-30"
+StrategyCloseAllDate = "2016-12-31"
+
 DeployMonths = 12
 Return = 0.1 
 MinMarketCap=0
@@ -18,9 +24,9 @@ path = "/home/psharma/Seafile/rfiles/daily/"
 Upside = 25 # In Percent
 RSIEntry=20
 RSIExit=80
-R2Fit=60 # In Percent
+R2Fit=70 # In Percent
 Slope=10 # In Percent
-SingleLegTransactionCost=0.25 # In Percent
+SingleLegTransactionCost=0.20 # In Percent
 
 #### FUNCTIONS ####
 
@@ -256,7 +262,7 @@ Portfolio = data.frame(
 #registerDoParallel(cl)
 for (d in 1:length(StatementDate)) {
   date = StatementDate[d]
-  if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
+  if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0 ) {
     print(paste("Processing d:", d, sep = ""))
     #weekday
     out = CalculateNPV(Portfolio, date, path)
@@ -278,7 +284,7 @@ for (d in 1:length(StatementDate)) {
           load(paste(path, scrip, ".Rdata", sep = ""))
           OverBought = runSum(RSI(md$settle, 2) > RSIExit, 2) == 2
           enddate = which(as.Date(md$date, tz = "Asia/Kolkata") == date)
-          if (length(enddate) > 0 && OverBought[enddate] == TRUE) {
+          if ((length(enddate) > 0 && OverBought[enddate] == TRUE)||(length(enddate)>0 && as.Date(md$date[enddate])>as.Date(StrategyCloseAllDate))) {
             print(paste("exit d:", d, sep = ""))
             Portfolio[p, 'selldate'] = as.character(date)
             Portfolio[p, 'sellprice'] = md$settle[enddate]
@@ -289,20 +295,21 @@ for (d in 1:length(StatementDate)) {
     
     
     #Now Scan for Buys
-    
     if (nrow(Portfolio) > 0) {
       DistinctPurchasesThisMonth = length(unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")]))
     } else{
       DistinctPurchasesThisMonth = 0
     }
-    if (Gap > MinOrderValue & DistinctPurchasesThisMonth < 5) {
+    print(paste("Processing Buy. Gap:", Gap,",MinOrderValue:",MinOrderValue,",DistinctPurchasesThisMonth:",DistinctPurchasesThisMonth, ",date:",date,sep = ""))
+    if (Gap > MinOrderValue && DistinctPurchasesThisMonth < 5 && date< as.Date(StrategyEndDate)) {
       load(GetDF4FileName(date))
       df4 = df4[df4$UPSIDE > Upside / 2,] # get a smaller list of df4 that has a positive upside
       df4 <- UpdateDF4Upside(df4, as.character(date))
+      print(paste("Processing Buy for d2:", d,",date:",date, sep = ""))
       shortlist <-
         df4[df4$UPSIDE > Upside &
               df4$DIVIDENDPAYOUTPERC > 10 &
-              #df4$ROCE > 20 &
+              df4$ROCE > 15 &
               df4$AnnualizedSlope > Slope/100  &
               df4$r > R2Fit/100 & df4$CurrentRSI < RSIEntry &
               df4$FINDATE+90 < date &
@@ -378,3 +385,4 @@ print(paste("xirr:",xirr(cashflow,StatementDate)*100,sep=""))
 #     update portfolio
 #   End For
 # End For
+# png(file="mag_feb.png", units="in", width=11, height=8.5, res=300)

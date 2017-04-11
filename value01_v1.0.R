@@ -5,6 +5,12 @@ library(log4r)
 library(bizdays)
 library(RTrade)
 library(PerformanceAnalytics)
+logger <- create.logger()
+logfile(logger) <- 'base.log'
+level(logger) <- 'INFO'
+levellog(logger, "INFO", "Starting EOD Scan")
+
+setwd("/home/psharma/strategies/value/value01")
 holidays <- read.csv("holidays.csv")
 holidays <- as.Date(as.character(holidays[, 1]), "%Y%m%d")
 create.calendar(
@@ -28,7 +34,7 @@ Database = 6
 #   folder,
 #   sep = ""
 # ))
-setwd("/home/psharma/strategies/value/value01")
+
 InitialCapital = 2000000
 StrategyStartDate = "2016-10-01"
 DeployMonths = 12
@@ -181,6 +187,7 @@ UpdateDF4Upside <- function(df4, settledate) {
       ))
       endlength = which(md$date == settledate)
       if (length(endlength) == 1 && endlength > 251) {
+        #print(md$symbol)
         df4$CurrentRSI[i] = RSI(md$settle, 2)[endlength]
         startlength = endlength - 251
         OverSold = runSum(RSI(md$settle, 2) < 20, 2) == 2
@@ -249,6 +256,7 @@ UpdatePortfolioBuy <-
                 mtm = NA_real_,
                 mv = NA_real_,
                 month = month,
+                profit= NA_real_,
                 stringsAsFactors = FALSE
               )
             )
@@ -261,11 +269,13 @@ UpdatePortfolioBuy <-
 
 GetCurrentPosition <- function(scrip, portfolio) {
   position <- 0
-  for (row in 1:nrow(portfolio)) {
-    if (is.na(portfolio[row, 'selldate']) &&
-        portfolio[row, 'scrip'] == scrip) {
-      position = position + portfolio[row, 'size']
-    }
+  if(nrow(portfolio)>0){
+    for (row in 1:nrow(portfolio)) {
+      if (is.na(portfolio[row, 'selldate']) &&
+          portfolio[row, 'scrip'] == scrip) {
+        position = position + portfolio[row, 'size']
+      }
+    }   
   }
   position
 }
@@ -308,8 +318,11 @@ if (!file.exists("Portfolio.Rdata")) {
     mtm = as.numeric(),
     mv = as.numeric(),
     month = as.numeric(),
+    profit=as.numeric(),
     stringsAsFactors = FALSE
   )
+}else{
+  load("Portfolio.Rdata")
 }
 
 StartingDate = as.Date(StrategyStartDate)
@@ -360,6 +373,7 @@ for (d in StartingIndex:length(StatementDate)) {
             print(paste("Exit Date:", date, " ,Scrip:", scrip, sep = ""))
             # write SELL to redis
             if (today == date) {
+            #if (as.Date("2016-10-21") == date) {
               redisConnect()
               redisSelect(Database)
               size = portfolio[p, 'size']
@@ -420,22 +434,22 @@ for (d in StartingIndex:length(StatementDate)) {
         shortlist <-
           shortlist[1:(TradesPerMonth - DistinctPurchasesThisMonth), ]
       }
-      
       if (nrow(shortlist) > 0 &&
           DistinctPurchasesThisMonth < TradesPerMonth) {
         InvestmentValue = Gap / (TradesPerMonth - DistinctPurchasesThisMonth)
         # write BUY to redis
+        #if (as.Date("2016-10-21") == date) {
         if (today == date) {
-          redisConnect()
+        redisConnect()
           redisSelect(Database)
           for (row in 1:nrow(shortlist)) {
-            scrip = shortlist[row, 'scrip']
+            scrip = shortlist[row, 'TICKER']
             load(paste(path, scrip, ".Rdata", sep = ""))
             price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, 'settle']
-            size = as.integer(InvestementValue / price)
+            size = as.integer(InvestmentValue / price)
             longname = paste(scrip, "_STK___", sep = "")
             if (size > 0) {
-              position = GetCurrentPosition(name, Portfolio)
+              position = GetCurrentPosition(scrip, Portfolio)
               redisRPush(paste("trades", Strategy, sep = ":"),
                          charToRaw(
                            paste(longname, size, "BUY", 0, position, sep = ":")
@@ -462,6 +476,7 @@ for (d in StartingIndex:length(StatementDate)) {
 }
 
 #stopCluster(cl)
+
 Portfolio$profit = ifelse(
   !is.na(Portfolio$sellprice),
   Portfolio$size * (Portfolio$sellprice - Portfolio$buyprice) - SingleLegTransactionCost /
@@ -488,19 +503,24 @@ if (nrow(Portfolio) > 0) {
   cashflow <- CashFlow(Portfolio, StatementDate)
   cashflow[length(cashflow)] <- cashflow[length(cashflow)] + npv
   
-  print(StatementDate[maxdddate])
-  print(paste("Max Loss:", (RealizedProfit[maxdddate] + UnRealizedProfit[maxdddate])), sep =
+  print(StatementDate[maxdddate][1])
+  print(paste("Max Loss:", (RealizedProfit[maxdddate][1] + UnRealizedProfit[maxdddate][1])), sep =
           "")
   print(paste(
     "Prior Peak Equity:",
-    max(RealizedProfit[1:maxdddate] + UnRealizedProfit[1:maxdddate])
+    max(RealizedProfit[1:maxdddate[1]] + UnRealizedProfit[1:maxdddate[1]])
   ), sep =
     "")
-  plot(x = StatementDate,
-       y = RealizedProfit + UnRealizedProfit,
-       type = 'l')
-  irr <- xirr(cashflow, StatementDate) * 100
-  print(paste("xirr:", irr, sep = ""))
+  # plot(x = StatementDate,
+  #      y = RealizedProfit + UnRealizedProfit,
+  #      type = 'l')
+  if(sum(cashflow)>0){
+    irr <- xirr(cashflow, StatementDate) * 100
+    print(paste("xirr:", irr, sep = ""))
+    
+  }else{
+    irr=0
+  }
   winratio <-
     sum((
       ifelse(is.na(Portfolio$mtm), Portfolio$buyprice, Portfolio$mtm) - Portfolio$buyprice
@@ -514,8 +534,6 @@ if (nrow(Portfolio) > 0) {
             winratio = winratio,
             profit = profit
           ))
-  #save(Portfolio,file=paste("Portfolio",run,".Rdata",sep=""))
-  #save(cashflow,file=paste("cashflow",run,".Rdata",sep=""))
   save(Portfolio,file="Portfolio.Rdata")
   ActualPortfolioValue <-
     ifelse(ActualPortfolioValue == 0, NA_real_, ActualPortfolioValue)

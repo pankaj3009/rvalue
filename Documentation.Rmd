@@ -1,0 +1,1602 @@
+---
+title: "Result Summary for Algorithm investing across NSE Stocks based on Valuation (SMCLO)"
+output:
+  html_document:
+    number_sections: true
+keep_tex: yes
+---
+<style type="text/css">
+
+body{ /* Normal  */
+   font-size: 12px;
+}
+td {  /* Table  */
+   font-size: 8px;
+}
+h1 { /* Header 1 */
+ font-size: 28px;
+/* color: DarkBlue;*/
+}
+h2 { /* Header 2 */
+ font-size: 22px;
+/* color: DarkBlue;*/
+}
+h3 { /* Header 3 */
+ font-size: 18px;
+ /*color: DarkBlue;*/
+}
+code.r{ /* Code block */
+  font-size: 10px;
+}
+pre { /* Code block */
+  font-size: 10px
+}
+</style>
+
+# About SMCLO
+SMCLO is a long only investment algorithm based on DCF valuation. The algorithm selects stocks that are deemed to be undervalued, based on inCurrency’s implementation of the DCF model. The financial spreading information are from Reuters Fundamentals, sourced via licensing from Interactive Brokers.  Given its focus on valuation, SMCLO tends to pick small and mid-cap stocks. 
+
+SMCLO requires the investment process to mature with current recommendation of five-year investment horizon. However, individual stocks are churned after a minimum holding (currently at one year).
+
+The investment algorithm is a combination of money management and stock picking.
+
+##Key Definitions
+###MTM
+Mark to Market of the holdings of the client  
+
+###Ramp Months
+The duration, in months, during which the algorithm is either buying or selling. There is no churn during this period.
+
+###Committed Capital
+The capital that the client wants to manage using SMCLO.  
+
+###Target Portfolio Value
+The target MTM that SMCLO determines for each month.   
+
+###Actual Portfolio Value
+The MTM of the open equity positions initiated by SMCLO.  
+
+###Initiation Month
+The month when SMCLO becomes operational for the client.  
+
+###End Month
+The month when SMCLO closes all positions.  
+
+###Rotate Start Month
+The month, *Ramp Months* after the *Initiation Month*. So, for example if the Initiation Month is June 2016, and *Ramp Months* is 12, the *End Month* would be May 2017.  
+
+###Liquidate Start Month
+The month, *Ramp Months* before the *End Month*. So, for example if the *End Month* is June 2021, and *Ramp Months* is 12, the *Liquidate Start Month* would be July 2020.  
+
+##Money Management
+1. The algorithm attempts to hold the *Target Portfolio Value* that provides a 10% simple interest gain per annum. The *Target Portfolio Value* is calculated at the beginning of each Month, and is valid for the month.  
+2. With the 10% growth, the algorithm will attempt to completely invest the *Committed Capital* at the beginning of the *Rotate Start Month*.  
+3. From the *Rotate Start Month*, the algorithm will attempt to hold the growth in *Actual Portfolio Value* to a 10% per annum simple interest, where 10% is a proxy for inflation. If the portfolio outperforms, the excess cash can be taken out by the client. However, if the portfolio underperforms, the client will need to inject capital.  Effectively, we are trying to ensure that the client maintains purchasing power for the duration of the investment, and excess returns are returned, as generated.  
+4. Algorithm will keep the 10% pa growth till beginning of the *Liquidate Start Month*. Once *Liquidate Start Month* , the algorithm starts unwinding, and brings the portfolio value down to zero at the end of the *Ramp Months* following the *Liquidate Start Month*.  
+
+##Stock Picking
+1. The valuation levels are calculated each working day, based on the closing price of the prior trading session.  
+2. Each purchase is held for a minimum of 370 days.
+3. Stock that are shortlisted for purchases need to be undervalued by a minimum threshold. In addition, there are filters on the price patterns including  
+    a. Trend line using regression on closing prices should have a positive return over the last 12 months –potential undervaluation should be evidenced by positive returns.  
+    b. The coefficient of restitution of the regression fit should be higher than a specified value - This prevents us from picking stocks that are undervalued, but have had a large historical realized volatility.  
+    c. Minium Dividend payout ratio in the last annual reported results- A hedge against paper profits.  
+    d. Minimum hurdle ROCE in the last annual reported result – Efficiency of operations.  
+4. Purchases are made when the stocks meeting the filters are oversold in short term. Similarly, exits are made when stocks have been in the portfolio for atleast *Ramp Months* and are overbought.
+
+```{r setoptions,echo=FALSE,results="hide"}
+library(knitr)
+opts_chunk$set(echo=FALSE,results="hide")
+```
+<P style="page-break-before: always">
+#Run Results [5 year committment, starting Jul 2011 with minimum holding duration = 12 months]
+```{r maincodeline,cache=TRUE}
+setwd(paste(
+        "/home/psharma/Seafile/rfiles/valuation/",
+        "",
+        sep = ""
+))
+library(zoo)
+library(TTR)
+library(RTrade)
+library(PerformanceAnalytics)
+source("valuationfunctions.R")
+options(scipen = 999) #disable scientific notation
+#options(scipen=0) #enable scientific notation
+
+#### PARAMETERS ####
+folder = "20160923"
+Strategy = "value01"
+setwd(paste(
+        "/home/psharma/Seafile/servers/FundamentalData/",
+        folder,
+        sep = ""
+))
+InitialCapital = 20000000
+StrategyStartDate = "2011-07-01"
+#StrategyStartDate = "2012-01-01"
+StrategyEndDate = "2015-06-30"
+#StrategyEndDate = "2015-12-31"
+StrategyCloseAllDate = "2016-06-30"
+#StrategyCloseAllDate = "2016-12-31"
+ROCE=15
+DividendPayOut=10
+ExitDays = +370
+WorkingDaysForSlope = 252
+DeployMonths = 12
+Return = 0.1
+MinMarketCap = 0
+MinOrderValue = 10000
+path = "/home/psharma/Seafile/rfiles/daily/"
+Upside = 25 # In Percent
+RSIEntry = 20
+RSIExit = 80
+R2Fit = 70 # In Percent
+Slope = 10 # In Percent
+SingleLegTransactionCost = 0.20 # In Percent
+
+#### ALGORITHM ####
+#DaysSinceStart = as.numeric(Sys.Date() - as.Date(StrategyStartDate)) + 1
+StatementDate = seq.Date(from = as.Date(StrategyStartDate), to = min(Sys.Date(),as.Date(StrategyCloseAllDate)), 1)
+TargetPortfolioValue = numeric(length(StatementDate))
+ActualPortfolioValue = rep(NA_real_, length(StatementDate))
+Gap = rep(NA_real_, length(StatementDate))
+RealizedProfit = rep(NA_real_, length(StatementDate))
+UnRealizedProfit = rep(NA_real_, length(StatementDate))
+
+TargetPortfolioValue = rep(InitialCapital, length(StatementDate))
+Cash = rep(0, length(StatementDate))
+MonthsElapsed = sapply(StatementDate, MonthsSinceStart, as.Date(StrategyStartDate)) +
+        1
+TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / DeployMonths,
+                            TargetPortfolioValue)
+# allow buildup of portfolio with interest
+Interest = TargetPortfolioValue * Return / 365
+Interest = cumsum(Interest)
+TargetPortfolioValue = TargetPortfolioValue + Interest
+indexOfSystematicSellStart = which(StatementDate == as.Date(StrategyEndDate) +
+                                           1)
+indexOfSystematicSellEnd = which(StatementDate == as.Date(StrategyCloseAllDate))
+TargetPortfolioValue[indexOfSystematicSellStart:indexOfSystematicSellEnd] =
+        seq(
+                from = TargetPortfolioValue[indexOfSystematicSellStart],
+                to = 0,
+                length.out = (indexOfSystematicSellEnd - indexOfSystematicSellStart + 1)
+        )
+if (indexOfSystematicSellEnd < length(TargetPortfolioValue)) {
+        TargetPortfolioValue[indexOfSystematicSellEnd + 1:length(TargetPortfolioValue)] =
+                0
+}
+
+Portfolio = data.frame(
+        scrip = as.character(),
+        size = as.numeric(),
+        buydate = as.character(),
+        buyprice = as.numeric(),
+        selldate = as.character(),
+        sellprice = as.numeric(),
+        mtm = as.numeric(),
+        mv = as.numeric(),
+        month = as.numeric(),
+        stringsAsFactors = FALSE
+)
+
+#cl <- makeCluster(detectCores())
+#registerDoParallel(cl)
+for (d in 1:length(StatementDate)) {
+        date = StatementDate[d]
+        if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
+                print(paste("Processing d:", d, sep = ""))
+                #weekday
+                out = CalculateNPV(Portfolio, date, path)
+                npv = out[[1]]
+                Portfolio = out[[2]]
+                RealizedProfit[d] = out[[3]]
+                UnRealizedProfit[d] = out[[4]]
+                ActualPortfolioValue[d] = npv
+                Gap[d] = TargetPortfolioValue[d] - npv
+                CurrentMonth = MonthsElapsed[d]
+                
+                # Sell Portfolio
+                if (nrow(Portfolio) > 0) {
+                        for (p in 1:nrow(Portfolio)) {
+                                DaysSincePurchase = as.numeric(date - as.Date(Portfolio[p, 'buydate']))
+                                if (is.na(Portfolio[p, 'sellprice']) &&
+                                    DaysSincePurchase > ExitDays) {
+                                        scrip = Portfolio[p, 'scrip']
+                                        load(paste(
+                                                path,
+                                                scrip,
+                                                ".Rdata",
+                                                sep = ""
+                                        ))
+                                        OverBought = runSum(RSI(md$settle, 2) > RSIExit,
+                                                            2) == 2
+                                        enddate = which(
+                                                as.Date(md$date, tz = "Asia/Kolkata") == date
+                                        )
+                                        if ((length(enddate) > 0 &&
+                                             OverBought[enddate] == TRUE) ||
+                                            (
+                                                    length(enddate) > 0 &&
+                                                    as.Date(md$date[enddate]) >= as.Date(
+                                                            StrategyCloseAllDate
+                                                    )
+                                            )) {
+                                                print(paste(
+                                                        "exit d:",
+                                                        d,
+                                                        sep = ""
+                                                ))
+                                                Portfolio[p, 'selldate'] = as.character(date)
+                                                Portfolio[p, 'sellprice'] = md$settle[enddate]
+                                        }
+                                }
+                        }
+                }
+                
+                #Now Scan for Buys
+                if (nrow(Portfolio) > 0) {
+                        DistinctPurchasesThisMonth = length(unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")]))
+                } else{
+                        DistinctPurchasesThisMonth = 0
+                }
+                #print(paste("Processing Buy. Gap:", Gap,",MinOrderValue:",MinOrderValue,",DistinctPurchasesThisMonth:",DistinctPurchasesThisMonth, ",date:",date,sep = ""))
+                if (Gap[d] > MinOrderValue &&
+                    DistinctPurchasesThisMonth < 5 &&
+                    date < as.Date(StrategyEndDate)) {
+                        load(GetDF4FileName(date))
+                        df4 = df4[df4$UPSIDE > Upside / 2,] # get a smaller list of df4 that has a positive upside
+                        df4 <-
+                                UpdateDF4Upside(df4, as.character(date))
+                        # print(paste("Processing Buy for d2:", d,",date:",date, sep = ""))
+                        shortlist <-
+                                df4[df4$UPSIDE > Upside &
+                                            df4$DIVIDENDPAYOUTPERC > DividendPayOut &
+                                            df4$ROCE > ROCE &
+                                            df4$AnnualizedSlope > Slope /
+                                            100  &
+                                            df4$r > R2Fit / 100 &
+                                            df4$CurrentRSI < RSIEntry &
+                                            df4$FINDATE + 90 < date &
+                                            df4$MCAP > MinMarketCap , ]
+                        #df4$FINDATE+90 < date covers scenarios where the FINANCIALS are forward looking
+                        existingSymbols <-
+                                unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")])
+                        dupes = match(existingSymbols, shortlist$TICKER)
+                        dupes <- dupes[!is.na(dupes)]
+                        if (length(dupes > 0)) {
+                                shortlist <- shortlist[-dupes, ]
+                        }
+                        if (DistinctPurchasesThisMonth < 5 &&
+                            nrow(shortlist) > 5 - DistinctPurchasesThisMonth) {
+                                shortlist <- shortlist[1:(5 - DistinctPurchasesThisMonth), ]
+                        }
+                        
+                        if (nrow(shortlist) > 0 &&
+                            DistinctPurchasesThisMonth < 5) {
+                                InvestmentValue = Gap[d] / (5 - DistinctPurchasesThisMonth)
+                                # write to redis
+                                # update portfolio
+                                print(
+                                        paste(
+                                                "entry d:",
+                                                d,
+                                                "InvestmentValue:",
+                                                InvestmentValue,
+                                                sep = ""
+                                        )
+                                )
+                                Portfolio <-
+                                        UpdatePortfolioBuy(
+                                                Portfolio,
+                                                shortlist,
+                                                date,
+                                                InvestmentValue,
+                                                CurrentMonth,
+                                                path
+                                        )
+                        }
+                }
+                
+                
+        }
+}
+#Cleanup values before reporting
+out = CalculateNPV(Portfolio, date, path)
+npv = out[[1]]
+Portfolio = out[[2]]
+RealizedProfit[d] = out[[3]]
+UnRealizedProfit[d] = out[[4]]
+
+#stopCluster(cl)
+Portfolio$profit = ifelse(
+        !is.na(Portfolio$sellprice),
+        Portfolio$size * (Portfolio$sellprice - Portfolio$buyprice) - SingleLegTransactionCost /
+                100 * Portfolio$size *
+                (Portfolio$sellprice + Portfolio$buyprice),
+        Portfolio$size * (Portfolio$mtm - Portfolio$buyprice) - SingleLegTransactionCost /
+                100 * Portfolio$size *
+                (Portfolio$mtm + Portfolio$buyprice)
+)
+
+UnRealizedProfit <- na.locf(UnRealizedProfit, na.rm = FALSE)
+UnRealizedProfit <- na.locf(UnRealizedProfit, fromLast = TRUE)
+
+RealizedProfit <- na.locf(RealizedProfit, na.rm = FALSE)
+RealizedProfit <- na.locf(RealizedProfit, fromLast  = TRUE)
+
+Gap <- na.locf(Gap, na.rm = FALSE)
+Gap <- na.locf(Gap, fromLast = TRUE)
+
+maxdddate = which(RealizedProfit + UnRealizedProfit == min(RealizedProfit +
+                                                                   UnRealizedProfit))
+
+cashflow <- CashFlow(Portfolio, StatementDate,SingleLegTransactionCost/100)
+cashflow[length(cashflow)] <- cashflow[length(cashflow)] + npv
+irr <- nlm(function(p) {
+        NPV(cashflow, StatementDate, p) ^ 2
+}, p = 0.1)
+winratio <-
+        sum((
+                ifelse(is.na(Portfolio$mtm), Portfolio$buyprice, Portfolio$mtm) - Portfolio$buyprice
+        ) >= 0) / nrow(Portfolio)
+
+ActualPortfolioValue <-
+        ifelse(ActualPortfolioValue == 0, NA_real_, ActualPortfolioValue)
+ActualPortfolioValue <-
+        na.locf(ActualPortfolioValue, na.rm = FALSE)
+ActualPortfolioValue <-
+        ifelse(is.na(ActualPortfolioValue), 0, ActualPortfolioValue)
+DailyPNL <-
+        (RealizedProfit + UnRealizedProfit) - Ref(RealizedProfit + UnRealizedProfit, -1)
+DailyPNL <- ifelse(is.na(DailyPNL), 0, DailyPNL)
+DailyReturn <-
+        ifelse(ActualPortfolioValue == 0, 0, DailyPNL / ActualPortfolioValue)
+df <- data.frame(time = StatementDate, return = DailyReturn)
+df <- read.zoo(df)
+sharpe <-
+        SharpeRatio((df[df != 0][, 1, drop = FALSE]), Rf = .07 / 365, FUN = "StdDev") *
+        sqrt(252)
+```
+
+The parameters for the run were set as follows:  
+
+##Envelope Parameters  
+Committed Capital = `r formatC(InitialCapital, format="d", big.mark=',')`  
+Ramp Months = `r DeployMonths`  
+Initiation Month = `r StrategyStartDate`  
+End Month = `r StrategyCloseAllDate`  
+
+##Stock Picking Parameters  
+- ROCE Threshold = `r ROCE`%  
+- Historical Return over past 12 months = `r Slope`%  
+- Dividend Payout Ratio = `r DividendPayOut`%  
+- Regression Fit = `r R2Fit`  
+- Minimum Market Cap = `r MinMarketCap` `r ifelse(MinMarketCap==0,", i.e. No Market Cap Filter","")`  
+- Minimum Theoretical Undervaluation = `r Upside`%
+- Brokerage per trade on value of trade @ `r SingleLegTransactionCost`% 
+
+## SMCLO Performance Metrics
+- IRR = `r sprintf("%3.2f",xirr(cashflow, StatementDate) * 100)`%  
+- Win Ratio = `r sprintf("%3.2f",winratio * 100)`%  
+- Sharpe Ratio = `r sprintf("%3.2f",sharpe)`  
+- Absolute P&L = `r  formatC(sum(Portfolio$profit),format="d", big.mark=',')`  
+
+These metrics include brokerage costs but exclude impact of license fees to be paid for running this Algorithm.  
+
+## Portfolio Buildup
+```{r PortfolioBuildUpPlot, results="asis",fig.height=6,fig.width=10}
+my.range <- range(ActualPortfolioValue)
+plot(x = StatementDate,
+     y = ActualPortfolioValue,
+     type = 'l', main="Portfolio Buildup",ylab="INR",xlab="Date",axes=FALSE,ylim=my.range,lty=1)
+my.legend.size <-legend("topright",c("Actual Portfolio Value","Target Portfolio Value","Gap"),plot = FALSE)
+my.range[2] <- 1.04*(my.range[2]+my.legend.size$rect$h)
+axis.Date(1,StatementDate,at=seq(min(StatementDate), max(StatementDate)+90, by="3 mon"),, format="%m-%Y")
+axis(2,at=seq(-5000000,50000000,5000000),labels=paste(seq(-5,50,5),"M",sep=""),las=1)
+lines(x = StatementDate,
+     y = TargetPortfolioValue,
+     ylab="",xlab="",lty=2)
+lines(x = StatementDate,
+     y = (TargetPortfolioValue-ActualPortfolioValue),
+    ,xlab="",ylab="",lty=3)
+legend("topleft",lty=c(1,2,3),
+        legend=c("Actual Portfolio Value","Target Portfolio Value","Gap"), cex=0.85, bty="n", xjust=1)
+
+```
+
+As seen from the graph, the *Target Portfolio Value* steps up at the beginning of the construction. It then has a stable growth rate, before falling in the divestment phase.
+
+The *Actual Portfolio Value* is denoted by the dashed line. It moves is correlated to the *Target Portfolio Value*.
+
+The difference between the *Target Portfolio Value* and *Actual Portfolio Value* is denoted by the dotted line, Gap. Positive Gap is on account of unavailability of purchase candidates, exits on defined conditions resulting in surplus cash.  
+
+
+
+## Profit & Loss Graph
+```{r ProfitPlot, results="asis",fig.height=6,fig.width=10}
+plot(x = StatementDate,
+     y = (RealizedProfit + UnRealizedProfit),
+     type = 'l',main="Profit & Loss",xlab="Date",ylab="Profit",axes=FALSE)
+axis.Date(1,StatementDate,at=seq(min(StatementDate), max(StatementDate)+90, by="3 mon"),, format="%m-%Y")
+minProfit=min(RealizedProfit+UnRealizedProfit)
+maxProfit=max(RealizedProfit+UnRealizedProfit)
+points=pretty(seq(minProfit,maxProfit,by=(maxProfit-minProfit)/5))
+axis(2,at=points,labels=paste(points/1000000,"M",sep=""),las=1)
+
+```
+
+## Deployed Cash
+```{r CashPlot, results="asis",fig.height=6,fig.width=10}
+plot(x = StatementDate,
+     y = ifelse(cumsum(cashflow)<0,cumsum(cashflow),0),
+     type = 'l',main="Deployed Cash",xlab="Date",ylab="Deployed Cash",axes=FALSE)
+axis.Date(1,StatementDate,at=seq(min(StatementDate), max(StatementDate)+90, by="3 mon"),, format="%m-%Y")
+minProfit=min(cumsum(cashflow))
+maxProfit=0
+points=pretty(seq(minProfit,maxProfit,by=(maxProfit-minProfit)/5))
+axis(2,at=points,labels=paste(points/1000000,"M",sep=""),las=1)
+```
+
+Negative Values of Deployed Cash denote investment in the algorithm.  
+
+## Performance vs Nifty SmallAndMid400 Index
+```{r SmallAndMid4001}
+mfdata<-read.csv("niftysmallmid400.csv",header=FALSE,stringsAsFactors = FALSE)
+colnames(mfdata)<-c("date","price")
+mfdata$date<-as.Date(mfdata$date)
+mfdata<-mfdata[order(mfdata$date),]
+
+PortfolioMF = data.frame(
+        scrip = as.character(),
+        size = as.numeric(),
+        buydate = as.character(),
+        buyprice = as.numeric(),
+        selldate = as.character(),
+        sellprice = as.numeric(),
+        mtm = as.numeric(),
+        mv = as.numeric(),
+        month = as.numeric(),
+        profit=as.numeric(),
+        stringsAsFactors = FALSE
+)
+mfnpv=0
+for(p in 1:nrow(Portfolio)){
+        #print(paste("number of rows:",nrow(PortfolioMF),sep=""))
+        entrydate=Portfolio[p,"buydate"]
+        entryvalue=Portfolio[p,"size"]*Portfolio[p,"buyprice"]
+        mfbuyprice=tail(mfdata[mfdata$date<=entrydate,c("price")],1)
+        mfbuysize=entryvalue/mfbuyprice
+        selldate=Portfolio[p,"selldate"]
+        if(!is.na(selldate)){
+                mfsellprice=tail(mfdata[mfdata$date<=selldate,c("price")],1)
+        }else{
+                mfsellprice=mfdata$price[nrow(mfdata)]
+                mfnpv=mfnpv+mfsellprice*mfbuysize
+        }
+        #print(paste("number of rows:",nrow(PortfolioMF),sep=""))
+        profit=(mfsellprice-mfbuyprice)*mfbuysize
+        PortfolioMF=rbind(PortfolioMF,data.frame(scrip="Franklin Templeton MF",size=mfbuysize,buydate=entrydate,buyprice=mfbuyprice,selldate=selldate,
+                                                 sellprice=mfsellprice,mtm=NA_real_,mv=NA_real_,month=NA_real_,profit=profit,stringsAsFactors = FALSE))
+        
+}
+
+mfcashflow <- CashFlow(PortfolioMF, StatementDate,0)
+mfcashflow[length(cashflow)] <- mfcashflow[length(cashflow)] + mfnpv
+mfxirr=xirr(mfcashflow, StatementDate) * 100
+
+mfbuyprice=head(mfdata$price,1)
+buysize=20000000/mfbuyprice
+mfsellprice=tail(mfdata$price,1)
+profit=(mfsellprice-mfbuyprice)*buysize
+
+```
+
+###Assuming same entry and exit dates as strategy
+- IRR = `r sprintf("%3.2f",mfxirr)`% 
+- Absolute P&L = `r formatC(sum(PortfolioMF$profit),format="d", big.mark=',')`   
+
+###Assuming Buy on *Initiation Month* using all *Committed Capital* and exit on *End Month*
+- Absolute P&L = `r formatC(profit,format="d", big.mark=',')`  
+
+<P style="page-break-before: always">
+#Run Results [5 year committment, starting Jan 2012 with minimum holding duration = 12 months]  
+
+```{r Jan2012codeline,cache=TRUE}
+setwd(paste(
+        "/home/psharma/Seafile/rfiles/valuation/",
+        "",
+        sep = ""
+))
+library(zoo)
+library(TTR)
+library(RTrade)
+library(PerformanceAnalytics)
+source("valuationfunctions.R")
+options(scipen = 999) #disable scientific notation
+#options(scipen=0) #enable scientific notation
+
+#### PARAMETERS ####
+folder = "20160923"
+Strategy = "value01"
+setwd(paste(
+        "/home/psharma/Seafile/servers/FundamentalData/",
+        folder,
+        sep = ""
+))
+InitialCapital = 20000000
+StrategyStartDate = "2012-01-01"
+StrategyEndDate = "2015-12-31"
+StrategyCloseAllDate = "2016-12-31"
+ROCE=15
+DividendPayOut=10
+ExitDays = +370
+WorkingDaysForSlope = 252
+DeployMonths = 12
+Return = 0.1
+MinMarketCap = 0
+MinOrderValue = 10000
+path = "/home/psharma/Seafile/rfiles/daily/"
+Upside = 25 # In Percent
+RSIEntry = 20
+RSIExit = 80
+R2Fit = 70 # In Percent
+Slope = 10 # In Percent
+SingleLegTransactionCost = 0.20 # In Percent
+
+#### ALGORITHM ####
+#DaysSinceStart = as.numeric(Sys.Date() - as.Date(StrategyStartDate)) + 1
+StatementDate = seq.Date(from = as.Date(StrategyStartDate), to = min(Sys.Date(),as.Date(StrategyCloseAllDate)), 1)
+TargetPortfolioValue = numeric(length(StatementDate))
+ActualPortfolioValue = rep(NA_real_, length(StatementDate))
+Gap = rep(NA_real_, length(StatementDate))
+RealizedProfit = rep(NA_real_, length(StatementDate))
+UnRealizedProfit = rep(NA_real_, length(StatementDate))
+
+TargetPortfolioValue = rep(InitialCapital, length(StatementDate))
+Cash = rep(0, length(StatementDate))
+MonthsElapsed = sapply(StatementDate, MonthsSinceStart, as.Date(StrategyStartDate)) +
+        1
+TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / DeployMonths,
+                            TargetPortfolioValue)
+# allow buildup of portfolio with interest
+Interest = TargetPortfolioValue * Return / 365
+Interest = cumsum(Interest)
+TargetPortfolioValue = TargetPortfolioValue + Interest
+indexOfSystematicSellStart = ifelse(length(which(StatementDate == as.Date(StrategyEndDate)))>0, which(StatementDate == as.Date(StrategyEndDate))+
+                                           1,length(StatementDate)+1)
+indexOfSystematicSellEnd = ifelse(length(which(StatementDate == as.Date(StrategyCloseAllDate)))>0, which(StatementDate == as.Date(StrategyCloseAllDate))+
+                                                                 1,length(StatementDate))
+if(indexOfSystematicSellEnd>=indexOfSystematicSellStart){
+TargetPortfolioValue[indexOfSystematicSellStart:indexOfSystematicSellEnd] =
+        seq(
+                from = TargetPortfolioValue[indexOfSystematicSellStart],
+                to = 0,
+                length.out = (indexOfSystematicSellEnd - indexOfSystematicSellStart + 1)
+        )
+}
+if (indexOfSystematicSellEnd < length(TargetPortfolioValue)) {
+        TargetPortfolioValue[indexOfSystematicSellEnd + 1:length(TargetPortfolioValue)] =
+                0
+}
+
+Portfolio = data.frame(
+        scrip = as.character(),
+        size = as.numeric(),
+        buydate = as.character(),
+        buyprice = as.numeric(),
+        selldate = as.character(),
+        sellprice = as.numeric(),
+        mtm = as.numeric(),
+        mv = as.numeric(),
+        month = as.numeric(),
+        stringsAsFactors = FALSE
+)
+
+#cl <- makeCluster(detectCores())
+#registerDoParallel(cl)
+for (d in 1:length(StatementDate)) {
+        date = StatementDate[d]
+        if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
+                print(paste("Processing d:", d, sep = ""))
+                #weekday
+                out = CalculateNPV(Portfolio, date, path)
+                npv = out[[1]]
+                Portfolio = out[[2]]
+                RealizedProfit[d] = out[[3]]
+                UnRealizedProfit[d] = out[[4]]
+                ActualPortfolioValue[d] = npv
+                Gap[d] = TargetPortfolioValue[d] - npv
+                CurrentMonth = MonthsElapsed[d]
+                
+                # Sell Portfolio
+                if (nrow(Portfolio) > 0) {
+                        for (p in 1:nrow(Portfolio)) {
+                                DaysSincePurchase = as.numeric(date - as.Date(Portfolio[p, 'buydate']))
+                                if (is.na(Portfolio[p, 'sellprice']) &&
+                                    DaysSincePurchase > ExitDays) {
+                                        scrip = Portfolio[p, 'scrip']
+                                        load(paste(
+                                                path,
+                                                scrip,
+                                                ".Rdata",
+                                                sep = ""
+                                        ))
+                                        OverBought = runSum(RSI(md$settle, 2) > RSIExit,
+                                                            2) == 2
+                                        enddate = which(
+                                                as.Date(md$date, tz = "Asia/Kolkata") == date
+                                        )
+                                        if ((length(enddate) > 0 &&
+                                             OverBought[enddate] == TRUE) ||
+                                            (
+                                                    length(enddate) > 0 &&
+                                                    as.Date(md$date[enddate]) >= as.Date(
+                                                            StrategyCloseAllDate
+                                                    )
+                                            )) {
+                                                print(paste(
+                                                        "exit d:",
+                                                        d,
+                                                        sep = ""
+                                                ))
+                                                Portfolio[p, 'selldate'] = as.character(date)
+                                                Portfolio[p, 'sellprice'] = md$settle[enddate]
+                                        }
+                                }
+                        }
+                }
+                
+                #Now Scan for Buys
+                if (nrow(Portfolio) > 0) {
+                        DistinctPurchasesThisMonth = length(unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")]))
+                } else{
+                        DistinctPurchasesThisMonth = 0
+                }
+                #print(paste("Processing Buy. Gap:", Gap,",MinOrderValue:",MinOrderValue,",DistinctPurchasesThisMonth:",DistinctPurchasesThisMonth, ",date:",date,sep = ""))
+                if (Gap[d] > MinOrderValue &&
+                    DistinctPurchasesThisMonth < 5 &&
+                    date < as.Date(StrategyEndDate)) {
+                        load(GetDF4FileName(date))
+                        df4 = df4[df4$UPSIDE > Upside / 2,] # get a smaller list of df4 that has a positive upside
+                        df4 <-
+                                UpdateDF4Upside(df4, as.character(date))
+                        # print(paste("Processing Buy for d2:", d,",date:",date, sep = ""))
+                        shortlist <-
+                                df4[df4$UPSIDE > Upside &
+                                            df4$DIVIDENDPAYOUTPERC > DividendPayOut &
+                                            df4$ROCE > ROCE &
+                                            df4$AnnualizedSlope > Slope /
+                                            100  &
+                                            df4$r > R2Fit / 100 &
+                                            df4$CurrentRSI < RSIEntry &
+                                            df4$FINDATE + 90 < date &
+                                            df4$MCAP > MinMarketCap , ]
+                        #df4$FINDATE+90 < date covers scenarios where the FINANCIALS are forward looking
+                        existingSymbols <-
+                                unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")])
+                        dupes = match(existingSymbols, shortlist$TICKER)
+                        dupes <- dupes[!is.na(dupes)]
+                        if (length(dupes > 0)) {
+                                shortlist <- shortlist[-dupes, ]
+                        }
+                        if (DistinctPurchasesThisMonth < 5 &&
+                            nrow(shortlist) > 5 - DistinctPurchasesThisMonth) {
+                                shortlist <- shortlist[1:(5 - DistinctPurchasesThisMonth), ]
+                        }
+                        
+                        if (nrow(shortlist) > 0 &&
+                            DistinctPurchasesThisMonth < 5) {
+                                InvestmentValue = Gap[d] / (5 - DistinctPurchasesThisMonth)
+                                # write to redis
+                                # update portfolio
+                                print(
+                                        paste(
+                                                "entry d:",
+                                                d,
+                                                "InvestmentValue:",
+                                                InvestmentValue,
+                                                sep = ""
+                                        )
+                                )
+                                Portfolio <-
+                                        UpdatePortfolioBuy(
+                                                Portfolio,
+                                                shortlist,
+                                                date,
+                                                InvestmentValue,
+                                                CurrentMonth,
+                                                path
+                                        )
+                        }
+                }
+                
+                
+        }
+}
+#Cleanup values before reporting
+out = CalculateNPV(Portfolio, date, path)
+npv = out[[1]]
+Portfolio = out[[2]]
+RealizedProfit[d] = out[[3]]
+UnRealizedProfit[d] = out[[4]]
+
+#stopCluster(cl)
+Portfolio$profit = ifelse(
+        !is.na(Portfolio$sellprice),
+        Portfolio$size * (Portfolio$sellprice - Portfolio$buyprice) - SingleLegTransactionCost /
+                100 * Portfolio$size *
+                (Portfolio$sellprice + Portfolio$buyprice),
+        Portfolio$size * (Portfolio$mtm - Portfolio$buyprice) - SingleLegTransactionCost /
+                100 * Portfolio$size *
+                (Portfolio$mtm + Portfolio$buyprice)
+)
+
+UnRealizedProfit <- na.locf(UnRealizedProfit, na.rm = FALSE)
+UnRealizedProfit <- na.locf(UnRealizedProfit, fromLast = TRUE)
+
+RealizedProfit <- na.locf(RealizedProfit, na.rm = FALSE)
+RealizedProfit <- na.locf(RealizedProfit, fromLast  = TRUE)
+
+Gap <- na.locf(Gap, na.rm = FALSE)
+Gap <- na.locf(Gap, fromLast = TRUE)
+
+maxdddate = which(RealizedProfit + UnRealizedProfit == min(RealizedProfit +
+                                                                   UnRealizedProfit))
+
+cashflow <- CashFlow(Portfolio, StatementDate,SingleLegTransactionCost/100)
+cashflow[length(cashflow)] <- cashflow[length(cashflow)] + npv
+irr <- nlm(function(p) {
+        NPV(cashflow, StatementDate, p) ^ 2
+}, p = 0.1)
+winratio <-
+        sum((
+                ifelse(is.na(Portfolio$mtm), Portfolio$buyprice, Portfolio$mtm) - Portfolio$buyprice
+        ) >= 0) / nrow(Portfolio)
+
+ActualPortfolioValue <-
+        ifelse(ActualPortfolioValue == 0, NA_real_, ActualPortfolioValue)
+ActualPortfolioValue <-
+        na.locf(ActualPortfolioValue, na.rm = FALSE)
+ActualPortfolioValue <-
+        ifelse(is.na(ActualPortfolioValue), 0, ActualPortfolioValue)
+DailyPNL <-
+        (RealizedProfit + UnRealizedProfit) - Ref(RealizedProfit + UnRealizedProfit, -1)
+DailyPNL <- ifelse(is.na(DailyPNL), 0, DailyPNL)
+DailyReturn <-
+        ifelse(ActualPortfolioValue == 0, 0, DailyPNL / ActualPortfolioValue)
+df <- data.frame(time = StatementDate, return = DailyReturn)
+df <- read.zoo(df)
+sharpe <-
+        SharpeRatio((df[df != 0][, 1, drop = FALSE]), Rf = .07 / 365, FUN = "StdDev") *
+        sqrt(252)
+```
+
+The parameters for the run were set as follows:  
+
+##Envelope Parameters  
+Committed Capital = `r formatC(InitialCapital, format="d", big.mark=',')`  
+Ramp Months = `r DeployMonths`  
+Initiation Month = `r StrategyStartDate`  
+End Month = `r StrategyCloseAllDate`  
+
+
+##Stock Picking Parameters  
+- ROCE Threshold = `r ROCE`%  
+- Historical Return over past 12 months = `r Slope`%  
+- Dividend Payout Ratio = `r DividendPayOut`%  
+- Regression Fit = `r R2Fit`  
+- Minimum Market Cap = `r MinMarketCap` `r ifelse(MinMarketCap==0,", i.e. No Market Cap Filter","")`   
+- Minimum Theoretical Undervaluation = `r Upside`%
+- Brokerage per trade on value of trade @ `r SingleLegTransactionCost`% 
+
+
+## SMCLO Performance Metrics
+- IRR = `r sprintf("%3.2f",xirr(cashflow, StatementDate) * 100)`%  
+- Win Ratio = `r sprintf("%3.2f",winratio * 100)`%  
+- Sharpe Ratio = `r sprintf("%3.2f",sharpe)`  
+- Absolute P&L = `r  formatC(sum(Portfolio$profit),format="d", big.mark=',')`  
+
+These metrics include brokerage costs but exclude impact of license fees to be paid for running this Algorithm.  
+
+## Performance vs Nifty SmallAndMid400 Index
+```{r SmallAndMid4002}
+mfdata<-read.csv("niftysmallmid400.csv",header=FALSE,stringsAsFactors = FALSE)
+colnames(mfdata)<-c("date","price")
+mfdata$date<-as.Date(mfdata$date)
+mfdata<-mfdata[order(mfdata$date),]
+
+PortfolioMF = data.frame(
+        scrip = as.character(),
+        size = as.numeric(),
+        buydate = as.character(),
+        buyprice = as.numeric(),
+        selldate = as.character(),
+        sellprice = as.numeric(),
+        mtm = as.numeric(),
+        mv = as.numeric(),
+        month = as.numeric(),
+        profit=as.numeric(),
+        stringsAsFactors = FALSE
+)
+mfnpv=0
+for(p in 1:nrow(Portfolio)){
+        #print(paste("number of rows:",nrow(PortfolioMF),sep=""))
+        entrydate=Portfolio[p,"buydate"]
+        entryvalue=Portfolio[p,"size"]*Portfolio[p,"buyprice"]
+        mfbuyprice=tail(mfdata[mfdata$date<=entrydate,c("price")],1)
+        mfbuysize=entryvalue/mfbuyprice
+        selldate=Portfolio[p,"selldate"]
+        if(!is.na(selldate)){
+                mfsellprice=tail(mfdata[mfdata$date<=selldate,c("price")],1)
+        }else{
+                mfsellprice=mfdata$price[nrow(mfdata)]
+                mfnpv=mfnpv+mfsellprice*mfbuysize
+        }
+        #print(paste("number of rows:",nrow(PortfolioMF),sep=""))
+        profit=(mfsellprice-mfbuyprice)*mfbuysize
+        PortfolioMF=rbind(PortfolioMF,data.frame(scrip="Franklin Templeton MF",size=mfbuysize,buydate=entrydate,buyprice=mfbuyprice,selldate=selldate,
+                                                 sellprice=mfsellprice,mtm=NA_real_,mv=NA_real_,month=NA_real_,profit=profit,stringsAsFactors = FALSE))
+        
+}
+
+mfcashflow <- CashFlow(PortfolioMF, StatementDate,0)
+mfcashflow[length(cashflow)] <- mfcashflow[length(cashflow)] + mfnpv
+mfxirr=xirr(mfcashflow, StatementDate) * 100
+
+mfbuyprice=head(mfdata$price,1)
+buysize=20000000/mfbuyprice
+mfsellprice=tail(mfdata$price,1)
+profit=(mfsellprice-mfbuyprice)*buysize
+
+```
+
+###Assuming same entry and exit dates as strategy  
+- IRR = `r sprintf("%3.2f",mfxirr)`%   
+- Absolute P&L = `r formatC(sum(PortfolioMF$profit),format="d", big.mark=',')`  
+
+###Assuming Buy on *Initiation Month* using all *Committed Capital* and exit on *End Month*  
+- Absolute P&L = `r formatC(profit,format="d", big.mark=',')`  
+
+<P style="page-break-before: always">
+#Run Results [5 year horizon, starting Jan 2012 with minimum holding duration = 24 months]  
+
+```{r Jan2012TwoYearcodeline,cache=TRUE}
+setwd(paste(
+        "/home/psharma/Seafile/rfiles/valuation/",
+        "",
+        sep = ""
+))
+library(zoo)
+library(TTR)
+library(RTrade)
+library(PerformanceAnalytics)
+source("valuationfunctions.R")
+options(scipen = 999) #disable scientific notation
+#options(scipen=0) #enable scientific notation
+
+#### PARAMETERS ####
+folder = "20160923"
+Strategy = "value01"
+setwd(paste(
+        "/home/psharma/Seafile/servers/FundamentalData/",
+        folder,
+        sep = ""
+))
+InitialCapital = 20000000
+StrategyStartDate = "2012-01-01"
+StrategyEndDate = "2014-12-31"
+StrategyCloseAllDate = "2016-12-31"
+ROCE=15
+DividendPayOut=10
+ExitDays = +370*2
+WorkingDaysForSlope = 252
+DeployMonths = 24
+Return = 0.1
+MinMarketCap = 0
+MinOrderValue = 10000
+path = "/home/psharma/Seafile/rfiles/daily/"
+Upside = 25 # In Percent
+RSIEntry = 20
+RSIExit = 80
+R2Fit = 70 # In Percent
+Slope = 10 # In Percent
+SingleLegTransactionCost = 0.20 # In Percent
+
+#### ALGORITHM ####
+#DaysSinceStart = as.numeric(Sys.Date() - as.Date(StrategyStartDate)) + 1
+StatementDate = seq.Date(from = as.Date(StrategyStartDate), to = min(Sys.Date(),as.Date(StrategyCloseAllDate)), 1)
+TargetPortfolioValue = numeric(length(StatementDate))
+ActualPortfolioValue = rep(NA_real_, length(StatementDate))
+Gap = rep(NA_real_, length(StatementDate))
+RealizedProfit = rep(NA_real_, length(StatementDate))
+UnRealizedProfit = rep(NA_real_, length(StatementDate))
+
+TargetPortfolioValue = rep(InitialCapital, length(StatementDate))
+Cash = rep(0, length(StatementDate))
+MonthsElapsed = sapply(StatementDate, MonthsSinceStart, as.Date(StrategyStartDate)) +
+        1
+TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / DeployMonths,
+                            TargetPortfolioValue)
+# allow buildup of portfolio with interest
+Interest = TargetPortfolioValue * Return / 365
+Interest = cumsum(Interest)
+TargetPortfolioValue = TargetPortfolioValue + Interest
+indexOfSystematicSellStart = ifelse(length(which(StatementDate == as.Date(StrategyEndDate)))>0, which(StatementDate == as.Date(StrategyEndDate))+
+                                           1,length(StatementDate)+1)
+indexOfSystematicSellEnd = ifelse(length(which(StatementDate == as.Date(StrategyCloseAllDate)))>0, which(StatementDate == as.Date(StrategyCloseAllDate))+
+                                                                 1,length(StatementDate))
+if(indexOfSystematicSellEnd>=indexOfSystematicSellStart){
+TargetPortfolioValue[indexOfSystematicSellStart:indexOfSystematicSellEnd] =
+        seq(
+                from = TargetPortfolioValue[indexOfSystematicSellStart],
+                to = 0,
+                length.out = (indexOfSystematicSellEnd - indexOfSystematicSellStart + 1)
+        )
+}
+if (indexOfSystematicSellEnd < length(TargetPortfolioValue)) {
+        TargetPortfolioValue[indexOfSystematicSellEnd + 1:length(TargetPortfolioValue)] =
+                0
+}
+
+Portfolio = data.frame(
+        scrip = as.character(),
+        size = as.numeric(),
+        buydate = as.character(),
+        buyprice = as.numeric(),
+        selldate = as.character(),
+        sellprice = as.numeric(),
+        mtm = as.numeric(),
+        mv = as.numeric(),
+        month = as.numeric(),
+        stringsAsFactors = FALSE
+)
+
+#cl <- makeCluster(detectCores())
+#registerDoParallel(cl)
+for (d in 1:length(StatementDate)) {
+        date = StatementDate[d]
+        if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
+                print(paste("Processing d:", d, sep = ""))
+                #weekday
+                out = CalculateNPV(Portfolio, date, path)
+                npv = out[[1]]
+                Portfolio = out[[2]]
+                RealizedProfit[d] = out[[3]]
+                UnRealizedProfit[d] = out[[4]]
+                ActualPortfolioValue[d] = npv
+                Gap[d] = TargetPortfolioValue[d] - npv
+                CurrentMonth = MonthsElapsed[d]
+                
+                # Sell Portfolio
+                if (nrow(Portfolio) > 0) {
+                        for (p in 1:nrow(Portfolio)) {
+                                DaysSincePurchase = as.numeric(date - as.Date(Portfolio[p, 'buydate']))
+                                if (is.na(Portfolio[p, 'sellprice']) &&
+                                    DaysSincePurchase > ExitDays) {
+                                        scrip = Portfolio[p, 'scrip']
+                                        load(paste(
+                                                path,
+                                                scrip,
+                                                ".Rdata",
+                                                sep = ""
+                                        ))
+                                        OverBought = runSum(RSI(md$settle, 2) > RSIExit,
+                                                            2) == 2
+                                        enddate = which(
+                                                as.Date(md$date, tz = "Asia/Kolkata") == date
+                                        )
+                                        if ((length(enddate) > 0 &&
+                                             OverBought[enddate] == TRUE) ||
+                                            (
+                                                    length(enddate) > 0 &&
+                                                    as.Date(md$date[enddate]) >= as.Date(
+                                                            StrategyCloseAllDate
+                                                    )
+                                            )) {
+                                                print(paste(
+                                                        "exit d:",
+                                                        d,
+                                                        sep = ""
+                                                ))
+                                                Portfolio[p, 'selldate'] = as.character(date)
+                                                Portfolio[p, 'sellprice'] = md$settle[enddate]
+                                        }
+                                }
+                        }
+                }
+                
+                #Now Scan for Buys
+                if (nrow(Portfolio) > 0) {
+                        DistinctPurchasesThisMonth = length(unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")]))
+                } else{
+                        DistinctPurchasesThisMonth = 0
+                }
+                #print(paste("Processing Buy. Gap:", Gap,",MinOrderValue:",MinOrderValue,",DistinctPurchasesThisMonth:",DistinctPurchasesThisMonth, ",date:",date,sep = ""))
+                if (Gap[d] > MinOrderValue &&
+                    DistinctPurchasesThisMonth < 5 &&
+                    date < as.Date(StrategyEndDate)) {
+                        load(GetDF4FileName(date))
+                        df4 = df4[df4$UPSIDE > Upside / 2,] # get a smaller list of df4 that has a positive upside
+                        df4 <-
+                                UpdateDF4Upside(df4, as.character(date))
+                        # print(paste("Processing Buy for d2:", d,",date:",date, sep = ""))
+                        shortlist <-
+                                df4[df4$UPSIDE > Upside &
+                                            df4$DIVIDENDPAYOUTPERC > DividendPayOut &
+                                            df4$ROCE > ROCE &
+                                            df4$AnnualizedSlope > Slope /
+                                            100  &
+                                            df4$r > R2Fit / 100 &
+                                            df4$CurrentRSI < RSIEntry &
+                                            df4$FINDATE + 90 < date &
+                                            df4$MCAP > MinMarketCap , ]
+                        #df4$FINDATE+90 < date covers scenarios where the FINANCIALS are forward looking
+                        existingSymbols <-
+                                unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")])
+                        dupes = match(existingSymbols, shortlist$TICKER)
+                        dupes <- dupes[!is.na(dupes)]
+                        if (length(dupes > 0)) {
+                                shortlist <- shortlist[-dupes, ]
+                        }
+                        if (DistinctPurchasesThisMonth < 5 &&
+                            nrow(shortlist) > 5 - DistinctPurchasesThisMonth) {
+                                shortlist <- shortlist[1:(5 - DistinctPurchasesThisMonth), ]
+                        }
+                        
+                        if (nrow(shortlist) > 0 &&
+                            DistinctPurchasesThisMonth < 5) {
+                                InvestmentValue = Gap[d] / (5 - DistinctPurchasesThisMonth)
+                                # write to redis
+                                # update portfolio
+                                print(
+                                        paste(
+                                                "entry d:",
+                                                d,
+                                                "InvestmentValue:",
+                                                InvestmentValue,
+                                                sep = ""
+                                        )
+                                )
+                                Portfolio <-
+                                        UpdatePortfolioBuy(
+                                                Portfolio,
+                                                shortlist,
+                                                date,
+                                                InvestmentValue,
+                                                CurrentMonth,
+                                                path
+                                        )
+                        }
+                }
+                
+                
+        }
+}
+#Cleanup values before reporting
+out = CalculateNPV(Portfolio, date, path)
+npv = out[[1]]
+Portfolio = out[[2]]
+RealizedProfit[d] = out[[3]]
+UnRealizedProfit[d] = out[[4]]
+
+#stopCluster(cl)
+Portfolio$profit = ifelse(
+        !is.na(Portfolio$sellprice),
+        Portfolio$size * (Portfolio$sellprice - Portfolio$buyprice) - SingleLegTransactionCost /
+                100 * Portfolio$size *
+                (Portfolio$sellprice + Portfolio$buyprice),
+        Portfolio$size * (Portfolio$mtm - Portfolio$buyprice) - SingleLegTransactionCost /
+                100 * Portfolio$size *
+                (Portfolio$mtm + Portfolio$buyprice)
+)
+
+UnRealizedProfit <- na.locf(UnRealizedProfit, na.rm = FALSE)
+UnRealizedProfit <- na.locf(UnRealizedProfit, fromLast = TRUE)
+
+RealizedProfit <- na.locf(RealizedProfit, na.rm = FALSE)
+RealizedProfit <- na.locf(RealizedProfit, fromLast  = TRUE)
+
+Gap <- na.locf(Gap, na.rm = FALSE)
+Gap <- na.locf(Gap, fromLast = TRUE)
+
+maxdddate = which(RealizedProfit + UnRealizedProfit == min(RealizedProfit +
+                                                                   UnRealizedProfit))
+
+cashflow <- CashFlow(Portfolio, StatementDate,SingleLegTransactionCost/100)
+cashflow[length(cashflow)] <- cashflow[length(cashflow)] + npv
+irr <- nlm(function(p) {
+        NPV(cashflow, StatementDate, p) ^ 2
+}, p = 0.1)
+winratio <-
+        sum((
+                ifelse(is.na(Portfolio$mtm), Portfolio$buyprice, Portfolio$mtm) - Portfolio$buyprice
+        ) >= 0) / nrow(Portfolio)
+
+ActualPortfolioValue <-
+        ifelse(ActualPortfolioValue == 0, NA_real_, ActualPortfolioValue)
+ActualPortfolioValue <-
+        na.locf(ActualPortfolioValue, na.rm = FALSE)
+ActualPortfolioValue <-
+        ifelse(is.na(ActualPortfolioValue), 0, ActualPortfolioValue)
+DailyPNL <-
+        (RealizedProfit + UnRealizedProfit) - Ref(RealizedProfit + UnRealizedProfit, -1)
+DailyPNL <- ifelse(is.na(DailyPNL), 0, DailyPNL)
+DailyReturn <-
+        ifelse(ActualPortfolioValue == 0, 0, DailyPNL / ActualPortfolioValue)
+df <- data.frame(time = StatementDate, return = DailyReturn)
+df <- read.zoo(df)
+sharpe <-
+        SharpeRatio((df[df != 0][, 1, drop = FALSE]), Rf = .07 / 365, FUN = "StdDev") *
+        sqrt(252)
+```
+
+The parameters for the run were set as follows:  
+
+##Envelope Parameters  
+Committed Capital = `r formatC(InitialCapital, format="d", big.mark=',')`  
+Ramp Months = `r DeployMonths`      
+Initiation Month = `r StrategyStartDate`  
+End Month = `r StrategyCloseAllDate`  
+
+##Stock Picking Parameters  
+- ROCE Threshold = `r ROCE`%  
+- Historical Return over past 12 months = `r Slope`%  
+- Dividend Payout Ratio = `r DividendPayOut`%  
+- Regression Fit = `r R2Fit`  
+- Minimum Market Cap = `r MinMarketCap` `r ifelse(MinMarketCap==0,", i.e. No Market Cap Filter","")`  
+- Minimum Theoretical Undervaluation = `r Upside`%
+- Brokerage per trade on value of trade @ `r SingleLegTransactionCost`% 
+
+## SMCLO Performance Metrics
+- IRR = `r sprintf("%3.2f",xirr(cashflow, StatementDate) * 100)`%  
+- Win Ratio = `r sprintf("%3.2f",winratio * 100)`%  
+- Sharpe Ratio = `r sprintf("%3.2f",sharpe)`  
+- Absolute P&L = `r  formatC(sum(Portfolio$profit),format="d", big.mark=',')`  
+
+These metrics include brokerage costs but exclude impact of license fees to be paid for running this Algorithm.    
+
+## Performance vs Nifty SmallAndMid400 Index  
+```{r SmallAndMid4003}
+mfdata<-read.csv("niftysmallmid400.csv",header=FALSE,stringsAsFactors = FALSE)
+colnames(mfdata)<-c("date","price")
+mfdata$date<-as.Date(mfdata$date)
+mfdata<-mfdata[order(mfdata$date),]
+
+PortfolioMF = data.frame(
+        scrip = as.character(),
+        size = as.numeric(),
+        buydate = as.character(),
+        buyprice = as.numeric(),
+        selldate = as.character(),
+        sellprice = as.numeric(),
+        mtm = as.numeric(),
+        mv = as.numeric(),
+        month = as.numeric(),
+        profit=as.numeric(),
+        stringsAsFactors = FALSE
+)
+mfnpv=0
+for(p in 1:nrow(Portfolio)){
+        #print(paste("number of rows:",nrow(PortfolioMF),sep=""))
+        entrydate=Portfolio[p,"buydate"]
+        entryvalue=Portfolio[p,"size"]*Portfolio[p,"buyprice"]
+        mfbuyprice=tail(mfdata[mfdata$date<=entrydate,c("price")],1)
+        mfbuysize=entryvalue/mfbuyprice
+        selldate=Portfolio[p,"selldate"]
+        if(!is.na(selldate)){
+                mfsellprice=tail(mfdata[mfdata$date<=selldate,c("price")],1)
+        }else{
+                mfsellprice=mfdata$price[nrow(mfdata)]
+                mfnpv=mfnpv+mfsellprice*mfbuysize
+        }
+        #print(paste("number of rows:",nrow(PortfolioMF),sep=""))
+        profit=(mfsellprice-mfbuyprice)*mfbuysize
+        PortfolioMF=rbind(PortfolioMF,data.frame(scrip="Franklin Templeton MF",size=mfbuysize,buydate=entrydate,buyprice=mfbuyprice,selldate=selldate,
+                                                 sellprice=mfsellprice,mtm=NA_real_,mv=NA_real_,month=NA_real_,profit=profit,stringsAsFactors = FALSE))
+        
+}
+
+mfcashflow <- CashFlow(PortfolioMF, StatementDate,0)
+mfcashflow[length(cashflow)] <- mfcashflow[length(cashflow)] + mfnpv
+mfxirr=xirr(mfcashflow, StatementDate) * 100
+
+mfbuyprice=head(mfdata$price,1)
+buysize=20000000/mfbuyprice
+mfsellprice=tail(mfdata$price,1)
+profit=(mfsellprice-mfbuyprice)*buysize
+
+```
+
+###Assuming same entry and exit dates as strategy  
+- IRR = `r sprintf("%3.2f",mfxirr)`%   
+- Absolute P&L = `r formatC(sum(PortfolioMF$profit),format="d", big.mark=',')`  
+
+###Assuming Buy on *Initiation Month* using all *Committed Capital* and exit on *End Month*  
+- Absolute P&L = `r formatC(profit,format="d", big.mark=',')`  
+
+
+<P style="page-break-before: always">
+# Comparison with Franklin Templeton India Prima Plus Growth (Direct)  
+NAV data for the fund was only available from 1 Jan 2013. We have provided below the comparison with the Fund performance, using fund NAV data between 1 Jan 2013 - 31 Dec 2016. The algorithm is also assumed operational from 1 Jan 2013. 
+
+```{r FranklinComparison,cache=TRUE}
+setwd(paste(
+        "/home/psharma/Seafile/rfiles/valuation/",
+        "",
+        sep = ""
+))
+library(zoo)
+library(TTR)
+library(RTrade)
+library(PerformanceAnalytics)
+source("valuationfunctions.R")
+options(scipen = 999) #disable scientific notation
+#options(scipen=0) #enable scientific notation
+
+#### PARAMETERS ####
+folder = "20160923"
+Strategy = "value01"
+setwd(paste(
+        "/home/psharma/Seafile/servers/FundamentalData/",
+        folder,
+        sep = ""
+))
+InitialCapital = 20000000
+StrategyStartDate = "2013-01-01"
+StrategyEndDate = "2016-12-31"
+StrategyCloseAllDate = "2017-12-31"
+ROCE=15
+DividendPayOut=10
+ExitDays = +370
+WorkingDaysForSlope = 252
+DeployMonths = 12
+Return = 0.1
+MinMarketCap = 0
+MinOrderValue = 10000
+path = "/home/psharma/Seafile/rfiles/daily/"
+Upside = 25 # In Percent
+RSIEntry = 20
+RSIExit = 80
+R2Fit = 70 # In Percent
+Slope = 10 # In Percent
+SingleLegTransactionCost = 0.20 # In Percent
+
+#### ALGORITHM ####
+#DaysSinceStart = as.numeric(Sys.Date() - as.Date(StrategyStartDate)) + 1
+StatementDate = seq.Date(from = as.Date(StrategyStartDate), to = as.Date(StrategyEndDate), 1)
+TargetPortfolioValue = numeric(length(StatementDate))
+ActualPortfolioValue = rep(NA_real_, length(StatementDate))
+Gap = rep(NA_real_, length(StatementDate))
+RealizedProfit = rep(NA_real_, length(StatementDate))
+UnRealizedProfit = rep(NA_real_, length(StatementDate))
+
+TargetPortfolioValue = rep(InitialCapital, length(StatementDate))
+Cash = rep(0, length(StatementDate))
+MonthsElapsed = sapply(StatementDate, MonthsSinceStart, as.Date(StrategyStartDate)) +
+        1
+TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / DeployMonths,
+                            TargetPortfolioValue)
+# allow buildup of portfolio with interest
+Interest = TargetPortfolioValue * Return / 365
+Interest = cumsum(Interest)
+TargetPortfolioValue = TargetPortfolioValue + Interest
+indexOfSystematicSellStart = ifelse(length(which(StatementDate == as.Date(StrategyEndDate)))>0, which(StatementDate == as.Date(StrategyEndDate))+
+                                           1,length(StatementDate)+1)
+indexOfSystematicSellEnd = ifelse(length(which(StatementDate == as.Date(StrategyCloseAllDate)))>0, which(StatementDate == as.Date(StrategyCloseAllDate))+
+                                                                 1,length(StatementDate))
+if(indexOfSystematicSellEnd>=indexOfSystematicSellStart){
+        TargetPortfolioValue[indexOfSystematicSellStart:indexOfSystematicSellEnd] =
+                seq(
+                        from = TargetPortfolioValue[indexOfSystematicSellStart],
+                        to = 0,
+                        length.out = (indexOfSystematicSellEnd - indexOfSystematicSellStart + 1)
+                )
+        
+}
+if (indexOfSystematicSellEnd < length(TargetPortfolioValue)) {
+        TargetPortfolioValue[indexOfSystematicSellEnd + 1:length(TargetPortfolioValue)] =
+                0
+}
+
+Portfolio = data.frame(
+        scrip = as.character(),
+        size = as.numeric(),
+        buydate = as.character(),
+        buyprice = as.numeric(),
+        selldate = as.character(),
+        sellprice = as.numeric(),
+        mtm = as.numeric(),
+        mv = as.numeric(),
+        month = as.numeric(),
+        stringsAsFactors = FALSE
+)
+
+#cl <- makeCluster(detectCores())
+#registerDoParallel(cl)
+for (d in 1:length(StatementDate)) {
+        date = StatementDate[d]
+        if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
+                print(paste("Processing d:", d, sep = ""))
+                #weekday
+                out = CalculateNPV(Portfolio, date, path)
+                npv = out[[1]]
+                Portfolio = out[[2]]
+                RealizedProfit[d] = out[[3]]
+                UnRealizedProfit[d] = out[[4]]
+                ActualPortfolioValue[d] = npv
+                Gap[d] = TargetPortfolioValue[d] - npv
+                CurrentMonth = MonthsElapsed[d]
+                
+                # Sell Portfolio
+                if (nrow(Portfolio) > 0) {
+                        for (p in 1:nrow(Portfolio)) {
+                                DaysSincePurchase = as.numeric(date - as.Date(Portfolio[p, 'buydate']))
+                                if (is.na(Portfolio[p, 'sellprice']) &&
+                                    DaysSincePurchase > ExitDays) {
+                                        scrip = Portfolio[p, 'scrip']
+                                        load(paste(
+                                                path,
+                                                scrip,
+                                                ".Rdata",
+                                                sep = ""
+                                        ))
+                                        OverBought = runSum(RSI(md$settle, 2) > RSIExit,
+                                                            2) == 2
+                                        enddate = which(
+                                                as.Date(md$date, tz = "Asia/Kolkata") == date
+                                        )
+                                        if ((length(enddate) > 0 &&
+                                             OverBought[enddate] == TRUE) ||
+                                            (
+                                                    length(enddate) > 0 &&
+                                                    as.Date(md$date[enddate]) >= as.Date(
+                                                            StrategyCloseAllDate
+                                                    )
+                                            )) {
+                                                print(paste(
+                                                        "exit d:",
+                                                        d,
+                                                        sep = ""
+                                                ))
+                                                Portfolio[p, 'selldate'] = as.character(date)
+                                                Portfolio[p, 'sellprice'] = md$settle[enddate]
+                                        }
+                                }
+                        }
+                }
+                
+                #Now Scan for Buys
+                if (nrow(Portfolio) > 0) {
+                        DistinctPurchasesThisMonth = length(unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")]))
+                } else{
+                        DistinctPurchasesThisMonth = 0
+                }
+                #print(paste("Processing Buy. Gap:", Gap,",MinOrderValue:",MinOrderValue,",DistinctPurchasesThisMonth:",DistinctPurchasesThisMonth, ",date:",date,sep = ""))
+                if (Gap[d] > MinOrderValue &&
+                    DistinctPurchasesThisMonth < 5 &&
+                    date < as.Date(StrategyEndDate)) {
+                        load(GetDF4FileName(date))
+                        df4 = df4[df4$UPSIDE > Upside / 2,] # get a smaller list of df4 that has a positive upside
+                        df4 <-
+                                UpdateDF4Upside(df4, as.character(date))
+                        # print(paste("Processing Buy for d2:", d,",date:",date, sep = ""))
+                        shortlist <-
+                                df4[df4$UPSIDE > Upside &
+                                            df4$DIVIDENDPAYOUTPERC > DividendPayOut &
+                                            df4$ROCE > ROCE &
+                                            df4$AnnualizedSlope > Slope /
+                                            100  &
+                                            df4$r > R2Fit / 100 &
+                                            df4$CurrentRSI < RSIEntry &
+                                            df4$FINDATE + 90 < date &
+                                            df4$MCAP > MinMarketCap , ]
+                        #df4$FINDATE+90 < date covers scenarios where the FINANCIALS are forward looking
+                        existingSymbols <-
+                                unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")])
+                        dupes = match(existingSymbols, shortlist$TICKER)
+                        dupes <- dupes[!is.na(dupes)]
+                        if (length(dupes > 0)) {
+                                shortlist <- shortlist[-dupes, ]
+                        }
+                        if (DistinctPurchasesThisMonth < 5 &&
+                            nrow(shortlist) > 5 - DistinctPurchasesThisMonth) {
+                                shortlist <- shortlist[1:(5 - DistinctPurchasesThisMonth), ]
+                        }
+                        
+                        if (nrow(shortlist) > 0 &&
+                            DistinctPurchasesThisMonth < 5) {
+                                InvestmentValue = Gap[d] / (5 - DistinctPurchasesThisMonth)
+                                # write to redis
+                                # update portfolio
+                                print(
+                                        paste(
+                                                "entry d:",
+                                                d,
+                                                "InvestmentValue:",
+                                                InvestmentValue,
+                                                sep = ""
+                                        )
+                                )
+                                Portfolio <-
+                                        UpdatePortfolioBuy(
+                                                Portfolio,
+                                                shortlist,
+                                                date,
+                                                InvestmentValue,
+                                                CurrentMonth,
+                                                path
+                                        )
+                        }
+                }
+                
+                
+        }
+}
+#Cleanup values before reporting
+out = CalculateNPV(Portfolio, date, path)
+npv = out[[1]]
+Portfolio = out[[2]]
+RealizedProfit[d] = out[[3]]
+UnRealizedProfit[d] = out[[4]]
+
+#stopCluster(cl)
+Portfolio$profit = ifelse(
+        !is.na(Portfolio$sellprice),
+        Portfolio$size * (Portfolio$sellprice - Portfolio$buyprice) - SingleLegTransactionCost /
+                100 * Portfolio$size *
+                (Portfolio$sellprice + Portfolio$buyprice),
+        Portfolio$size * (Portfolio$mtm - Portfolio$buyprice) - SingleLegTransactionCost /
+                100 * Portfolio$size *
+                (Portfolio$mtm + Portfolio$buyprice)
+)
+
+UnRealizedProfit <- na.locf(UnRealizedProfit, na.rm = FALSE)
+UnRealizedProfit <- na.locf(UnRealizedProfit, fromLast = TRUE)
+
+RealizedProfit <- na.locf(RealizedProfit, na.rm = FALSE)
+RealizedProfit <- na.locf(RealizedProfit, fromLast  = TRUE)
+
+Gap <- na.locf(Gap, na.rm = FALSE)
+Gap <- na.locf(Gap, fromLast = TRUE)
+
+maxdddate = which(RealizedProfit + UnRealizedProfit == min(RealizedProfit +
+                                                                   UnRealizedProfit))
+
+cashflow <- CashFlow(Portfolio, StatementDate,SingleLegTransactionCost/100)
+cashflow[length(cashflow)] <- cashflow[length(cashflow)] + npv
+irr <- nlm(function(p) {
+        NPV(cashflow, StatementDate, p) ^ 2
+}, p = 0.1)
+winratio <-
+        sum((
+                ifelse(is.na(Portfolio$mtm), Portfolio$buyprice, Portfolio$mtm) - Portfolio$buyprice
+        ) >= 0) / nrow(Portfolio)
+
+ActualPortfolioValue <-
+        ifelse(ActualPortfolioValue == 0, NA_real_, ActualPortfolioValue)
+ActualPortfolioValue <-
+        na.locf(ActualPortfolioValue, na.rm = FALSE)
+ActualPortfolioValue <-
+        ifelse(is.na(ActualPortfolioValue), 0, ActualPortfolioValue)
+DailyPNL <-
+        (RealizedProfit + UnRealizedProfit) - Ref(RealizedProfit + UnRealizedProfit, -1)
+DailyPNL <- ifelse(is.na(DailyPNL), 0, DailyPNL)
+DailyReturn <-
+        ifelse(ActualPortfolioValue == 0, 0, DailyPNL / ActualPortfolioValue)
+df <- data.frame(time = StatementDate, return = DailyReturn)
+df <- read.zoo(df)
+sharpe <-
+        SharpeRatio((df[df != 0][, 1, drop = FALSE]), Rf = .07 / 365, FUN = "StdDev") *
+        sqrt(252)
+setwd(paste(
+        "/home/psharma/Seafile/rfiles/valuation/",
+        "",
+        sep = ""
+))
+mfdata<-read.csv("FTTimeSeries.csv",header=FALSE,stringsAsFactors = FALSE)
+colnames(mfdata)<-c("date","price")
+mfdata$date<-as.Date(mfdata$date)
+mfdata<-mfdata[order(mfdata$date),]
+
+PortfolioMF = data.frame(
+        scrip = as.character(),
+        size = as.numeric(),
+        buydate = as.character(),
+        buyprice = as.numeric(),
+        selldate = as.character(),
+        sellprice = as.numeric(),
+        mtm = as.numeric(),
+        mv = as.numeric(),
+        month = as.numeric(),
+        profit=as.numeric(),
+        stringsAsFactors = FALSE
+)
+mfnpv=0
+for(p in 1:nrow(Portfolio)){
+        #print(paste("number of rows:",nrow(PortfolioMF),sep=""))
+        entrydate=Portfolio[p,"buydate"]
+        entryvalue=Portfolio[p,"size"]*Portfolio[p,"buyprice"]
+        mfbuyprice=tail(mfdata[mfdata$date<=entrydate,c("price")],1)
+        mfbuysize=entryvalue/mfbuyprice
+        selldate=Portfolio[p,"selldate"]
+        if(!is.na(selldate)){
+                mfsellprice=tail(mfdata[mfdata$date<=selldate,c("price")],1)
+        }else{
+                mfsellprice=mfdata$price[nrow(mfdata)]
+                mfnpv=mfnpv+mfsellprice*mfbuysize
+        }
+        #print(paste("number of rows:",nrow(PortfolioMF),sep=""))
+        profit=(mfsellprice-mfbuyprice)*mfbuysize
+        PortfolioMF=rbind(PortfolioMF,data.frame(scrip="Franklin Templeton MF",size=mfbuysize,buydate=entrydate,buyprice=mfbuyprice,selldate=selldate,
+                                                 sellprice=mfsellprice,mtm=NA_real_,mv=NA_real_,month=NA_real_,profit=profit,stringsAsFactors = FALSE))
+        
+}
+
+mfcashflow <- CashFlow(PortfolioMF, StatementDate,0)
+mfcashflow[length(cashflow)] <- mfcashflow[length(cashflow)] + mfnpv
+mfxirr=xirr(mfcashflow, StatementDate) * 100
+
+mfbuyprice=head(mfdata$price,1)
+buysize=20000000/mfbuyprice
+mfsellprice=tail(mfdata$price,1)
+profit=(mfsellprice-mfbuyprice)*buysize
+
+
+```
+
+##Envelope Parameters  
+Committed Capital = `r formatC(InitialCapital, format="d", big.mark=',')`  
+Ramp Months = `r DeployMonths`      
+Initiation Month = `r StrategyStartDate`  
+End Month = `r StrategyCloseAllDate`  
+Compare Date = 2016-12-31
+
+##Stock Picking Parameters  
+- ROCE Threshold = `r ROCE`%  
+- Historical Return over past 12 months = `r Slope`%  
+- Dividend Payout Ratio = `r DividendPayOut`%  
+- Regression Fit = `r R2Fit`  
+- Minimum Market Cap = `r MinMarketCap` `r ifelse(MinMarketCap==0,", i.e. No Market Cap Filter","")`  
+- Minimum Theoretical Undervaluation = `r Upside`%
+- Brokerage per trade on value of trade @ `r SingleLegTransactionCost`% 
+
+## SMCLO Performance Metrics
+- IRR = `r sprintf("%3.2f",xirr(cashflow, StatementDate) * 100)`%  
+- Absolute P&L = `r formatC(sum(Portfolio$profit),format="d", big.mark=',')`  
+
+These metrics include brokerage costs but exclude impact of license fees to be paid for running this Algorithm.  
+
+
+## Mutual Fund Metrics MF Metrics
+###Assuming same entry and exit dates as strategy
+- IRR = `r sprintf("%3.2f",mfxirr)`% 
+- Absolute P&L = `r formatC(sum(PortfolioMF$profit),format="d", big.mark=',')`  
+
+###Assuming Buy on 1 Jan 2013 using *Committed Capital* and exit on 31 Dec 2016
+- Absolute P&L = `r formatC(profit,format="d", big.mark=',')`  
+
+<P style="page-break-before: always">
+# Risks  
+
+## Historical returns may not be indicator of future returns   
+The reported Algorithm performance is on backtested results, unless otherwise stated. In either case, historical returns are not an indictor of the returns in future.  
+
+## Data Quality  
+The Algorithm identifies buy and sell strategies via a combination of public data and private data distributed from data providers. Any change in quality of data provided and changes in data defintions can adversely affect the performance of the Algorithm.  
+
+## Execution  
+The Algorithm performance is affected by any difference between the execution price of a contract assumed by the Algorithm, and its actual execution price in the market. The actual execution price depends on the availability of the contract for trading, liquidity of the contract and the time of execution vs the time of the trade opportunity identifed by the Algorithm. Any slippage in prices can adversely affect the performance of the Algorithm.  
+
+## Model inadequacies  
+The Algorithm is built upon a model and rules for identifying buy and sell opportunities. The model defines a relationship between some external variables, but does not cover all possible external variables. It is possible that the performance of the Algorithm will be impacted by variables outside the model. In addition, the variables used in the model might lose their efficacy over a period of time. Any such model inadequacies can adversely affect the performance of the Algorithm.  
+
+## Regulations  
+Changes to business environment and new regulations can introduce market events that are not modelled by the Algorithm. Any such development can adversely affect the performance of the Algorithm.  
+
+## Tax Implications  
+The returns illustrated by this document are before any tax payments. The returns also exclude any license fees to be paid as a result of the contract to run this Algorithm. Potential clients are urged to work with their tax consultants and review tax implications of running the Algorithm on their own funds.  
+
+## Technology
+The timely generation of buy and sell opportunities is based on the availability of technology infrastructure, including but not limited to availability of internet, market data and corporate actions. Disruption in any enabling infrastructure could delay generation of buy and sell opportunities and could adversely affect the performance of the Algorithm.

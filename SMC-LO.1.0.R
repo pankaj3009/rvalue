@@ -5,14 +5,54 @@ library(log4r)
 library(bizdays)
 library(RTrade)
 library(PerformanceAnalytics)
+options(scipen=999)
+
+args.commandline=commandArgs(trailingOnly=TRUE)
+if(length(args.commandline)>0){
+        args<-args.commandline
+}
+
+redisConnect()
+redisSelect(1)
+if(length(args)>1){
+        static<-redisHGetAll(toupper(args[2]))
+}else{
+        static<-redisHGetAll("VALUE01")
+}
+
+newargs<-unlist(strsplit(static$args,","))
+if(length(args)<=1 && length(newargs>1)){
+        args<-newargs
+}
+redisClose()
+
+kWriteToRedis <- as.logical(static$WriteToRedis)
+kGetMarketData<-as.logical(static$GetMarketData)
+kDataCutOffBefore<-static$DataCutOffBefore
+kBackTestStartDate<-static$BackTestStartDate
+kBackTestEndDate<-static$BackTestEndDate
+kFNODataFolder <- static$FNODataFolder
+kNiftyDataFolder <- static$NiftyDataFolder
+kTimeZone <- static$TimeZone
+kBrokerage<-as.numeric(static$SingleLegBrokerageAsPercentOfValue)/100
+kPerContractBrokerage=as.numeric(static$SingleLegBrokerageAsValuePerContract)
+kHomeDirectory=static$HomeDirectory
+kCommittedCapital=as.numeric(static$CommittedCapital)
+kLogFile=static$LogFile
+kHolidayFile=static$HolidayFile
+kStrategy=args[2]
+kRedisDatabase=as.numeric(args[3])
+
+
 
 logger <- create.logger()
-logfile(logger) <- 'base.log'
+logfile(logger) <- kLogFile
 level(logger) <- 'INFO'
 levellog(logger, "INFO", "Starting EOD Scan")
 
-setwd("/home/psharma/Seafile/rfiles/valuation")
-holidays <- read.csv("holidays.csv")
+
+setwd(kHomeDirectory)
+holidays <- read.csv(kHolidayFile)
 holidays <- as.Date(as.character(holidays[, 1]), "%Y%m%d")
 create.calendar(
   holidays = holidays,
@@ -20,38 +60,18 @@ create.calendar(
   weekdays = c("saturday", "sunday")
 )
 
-
-
-#library(doParallel)
-options(scipen = 999) #disable scientific notation
-#options(scipen=0) #enable scientific notation
-
-#### PARAMETERS ####
-# folder = "20160923"
-Strategy = "value01"
-Database = 6
-# setwd(paste(
-#   "/home/psharma/Seafile/servers/FundamentalData/",
-#   folder,
-#   sep = ""
-# ))
-
-InitialCapital = 2000000
-StrategyStartDate = "2016-10-01"
-DeployMonths = 12
-CapitalGrowth = 10
-MinMarketCap = 0
-MinOrderValue = 10000
-Upside = 25 # In Percent
-ThresholdROCE = 20
-ThresholdDividedPayoutPercent = 10
-RSIEntry = 20
-RSIExit = 80
-R2Fit = 60 # In Percent
-Slope = 10 # In Percent
-TradesPerMonth = 5
-SingleLegTransactionCost = 0.25 # In Percent
-path = "/home/psharma/Seafile/rfiles/daily/"
+kDeployMonths=as.numeric(static$DeployMonths)
+kCapitalGrowth=as.numeric(static$CapitalGrowth)
+kMinMarketCap=as.numeric(static$MinMarketCap)
+kMinOrderValue=as.numeric(static$MinOrderValue)
+kUpside=as.numeric(static$Upside)
+kThresholdROCE = as.numeric(static$ThresholdROCE)
+kThresholdDividedPayoutPercent=as.numeric(static$ThresholdDividedPayoutPercent)
+kRSIEntry=as.numeric(static$RSIEntry)
+kRSIExit=as.numeric(static$RSIExit)
+kR2Fit=as.numeric(static$R2Fit)
+kSlope=as.numeric(static$Slope)
+kTradesPerMonth=as.numeric(static$TradesPerMonth)
 
 #### FUNCTIONS ####
 
@@ -144,14 +164,14 @@ CalculateNPV <- function(portfolio, date, path) {
           portfolio[l, 'mtm'] = price
           portfolio[l, 'mv'] = portfolio[l, 'size'] * price
           npv = npv + portfolio[l, 'mv']
-          unrealizedprofit = unrealizedprofit + portfolio[l, 'size'] * (portfolio[l, 'mtm'] - portfolio[l, 'buyprice']) - SingleLegTransactionCost /
+          unrealizedprofit = unrealizedprofit + portfolio[l, 'size'] * (portfolio[l, 'mtm'] - portfolio[l, 'buyprice']) - kBrokerage /
             100 * portfolio[l, 'size'] *
             (portfolio[l, 'mtm'] + portfolio[l, 'buyprice'])
         } else{
           npv = npv + ifelse(is.na(portfolio[l, 'mv']), 0, portfolio[l, 'mv'])
         }
       } else{
-        realizedprofit = realizedprofit + portfolio[l, 'size'] * (portfolio[l, 'sellprice'] - portfolio[l, 'buyprice']) - SingleLegTransactionCost /
+        realizedprofit = realizedprofit + portfolio[l, 'size'] * (portfolio[l, 'sellprice'] - portfolio[l, 'buyprice']) - kBrokerage /
           100 * portfolio[l, 'size'] *
           (portfolio[l, 'sellprice'] + portfolio[l, 'buyprice'])
       }
@@ -206,13 +226,13 @@ UpdateDF4Upside <- function(df4, settledate,datafolder) {
         for (i in 1:nrow(df4)) {
                 symbol = df4[i, 'TICKER']
                 if (file.exists(paste(
-                        "/home/psharma/Seafile/rfiles/daily/",
+                        "/home/psharma/Dropbox/rfiles/daily/",
                         symbol,
                         ".Rdata",
                         sep = ""
                 ))) {
                         load(paste(
-                                "/home/psharma/Seafile/rfiles/daily/",
+                                "/home/psharma/Dropbox/rfiles/daily/",
                                 symbol,
                                 ".Rdata",
                                 sep = ""
@@ -323,25 +343,25 @@ Summary = data.frame(
 )
 
 today <- adjust.previous(Sys.Date() - 1, "india")
-DaysSinceStart = as.numeric(today - as.Date(StrategyStartDate)) + 1
-StatementDate = seq.Date(from = as.Date(StrategyStartDate), to = today, 1)
+DaysSinceStart = as.numeric(today - as.Date(kBackTestStartDate)) + 1
+StatementDate = seq.Date(from = as.Date(kBackTestStartDate), to = today, 1)
 TargetPortfolioValue = numeric(DaysSinceStart)
 ActualPortfolioValue = numeric(DaysSinceStart)
 RealizedProfit = rep(NA_real_, DaysSinceStart)
 UnRealizedProfit = rep(NA_real_, DaysSinceStart)
 
-TargetPortfolioValue = rep(InitialCapital, DaysSinceStart)
+TargetPortfolioValue = rep(kCommittedCapital, DaysSinceStart)
 Cash = rep(0, DaysSinceStart)
-MonthsElapsed = sapply(StatementDate, MonthsSinceStart, as.Date(StrategyStartDate)) +
+MonthsElapsed = sapply(StatementDate, MonthsSinceStart, as.Date(kBackTestStartDate)) +
   1
-TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / 12, TargetPortfolioValue)
+TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / kDeployMonths, TargetPortfolioValue)
 # allow buildup of portfolio with interest
 #Interest = TargetPortfolioValue * Return / 365
 #Interest = cumsum(Interest)
 #TargetPortfolioValue = TargetPortfolioValue + Interest
-TargetPortfolioValue = TargetPortfolioValue * exp((CapitalGrowth / 100) * (seq_along(TargetPortfolioValue) / 365))
+TargetPortfolioValue = TargetPortfolioValue * exp((kCapitalGrowth / 100) * (seq_along(TargetPortfolioValue) / 365))
 #today = as.POSIXct(format(today), tz = "Asia/Kolkata")
-if (!file.exists("Portfolio.Rdata")) {
+if (!file.exists(paste("Portfolio_",args[2],".Rdata",sep=""))) {
   Portfolio = data.frame(
     scrip = as.character(),
     size = as.numeric(),
@@ -356,10 +376,10 @@ if (!file.exists("Portfolio.Rdata")) {
     stringsAsFactors = FALSE
   )
 }else{
-  load("Portfolio.Rdata")
+  load(paste("Portfolio_",args[2],".Rdata",sep=""))
 }
 
-StartingDate = as.Date(StrategyStartDate)
+StartingDate = as.Date(kBackTestStartDate)
 if (nrow(Portfolio) > 0) {
   for (row in 1:nrow(Portfolio)) {
     if (!is.na(Portfolio[row, 'selldate'])) {
@@ -379,10 +399,11 @@ StartingIndex = which(StatementDate == StartingDate)
 for (d in StartingIndex:length(StatementDate)) {
   date = StatementDate[d]
   print(paste("Processing Date:", date, sep = ""))
-  if(!isHoliday(dates=StatementDate[d],calendar="India")){
+#  if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
+    if(!isHoliday(dates=StatementDate[d],calendar="India")){
     #print(paste("Processing d:", d, sep = ""))
     #weekday
-    out = CalculateNPV(Portfolio, date, path)
+    out = CalculateNPV(Portfolio, date, kNiftyDataFolder)
     npv = out[[1]]
     Portfolio = out[[2]]
     RealizedProfit[d] = out[[3]]
@@ -398,8 +419,8 @@ for (d in StartingIndex:length(StatementDate)) {
         if (is.na(Portfolio[p, 'sellprice']) &&
             DaysSincePurchase > 370) {
           scrip = Portfolio[p, 'scrip']
-          load(paste(path, scrip, ".Rdata", sep = ""))
-          OverBought = runSum(RSI(md$asettle, 2) > RSIExit, 2) == 2
+          load(paste(kNiftyDataFolder, scrip, ".Rdata", sep = ""))
+          OverBought = runSum(RSI(md$asettle, 2) > kRSIExit, 2) == 2
           enddate = which(as.Date(md$date, tz = "Asia/Kolkata") == date)
           
           if (length(enddate) > 0 &&
@@ -408,12 +429,12 @@ for (d in StartingIndex:length(StatementDate)) {
             # write SELL to redis
             #if (today == date) {
               redisConnect()
-              redisSelect(Database)
+              redisSelect(kRedisDatabase)
               size = portfolio[p, 'size']
               longname = paste(scrip, "_STK___", sep = "")
               if (size > 0) {
                 position = GetCurrentPosition(scrip, Portfolio)
-                redisRPush(paste("trades", Strategy, sep = ":"),
+                redisRPush(paste("trades", kStrategy, sep = ":"),
                            charToRaw(
                              paste(longname, size, "SELL", 0, position, sep = ":")
                            ))
@@ -439,19 +460,19 @@ for (d in StartingIndex:length(StatementDate)) {
     } else{
       DistinctPurchasesThisMonth = 0
     }
-    if (Gap > MinOrderValue &
-        DistinctPurchasesThisMonth < TradesPerMonth) {
+    if (Gap > kMinOrderValue &
+        DistinctPurchasesThisMonth < kTradesPerMonth) {
       load(GetDF4FileName(date))
-      df4 = df4[df4$UPSIDE > Upside / 2,] # get a smaller list of df4 that has a positive upside
-      df4 <- UpdateDF4Upside(df4, as.character(date),"/home/psharma/Seafile/rfiles/daily")
+      df4 = df4[df4$UPSIDE > kUpside / 2,] # get a smaller list of df4 that has a positive upside
+      df4 <- UpdateDF4Upside(df4, as.character(date),"/home/psharma/Dropbox/rfiles/daily")
       shortlist <-
-        df4[df4$UPSIDE > Upside &
-              df4$DIVIDENDPAYOUTPERC > ThresholdDividedPayoutPercent &
-              df4$ROCE > ThresholdROCE &
-              df4$AnnualizedSlope > Slope / 100  &
-              df4$r > R2Fit / 100 & df4$CurrentRSI < RSIEntry &
+        df4[df4$UPSIDE > kUpside &
+              df4$DIVIDENDPAYOUTPERC > kThresholdDividedPayoutPercent &
+              df4$ROCE > kThresholdROCE &
+              df4$AnnualizedSlope > kSlope / 100  &
+              df4$r > kR2Fit / 100 & df4$CurrentRSI < kRSIEntry &
               df4$FINDATE + 90 < date &
-              df4$MCAP > MinMarketCap , ]
+              df4$MCAP > kMinMarketCap , ]
       #df4$FINDATE+90 < date covers scenarios where the FINANCIALS are forward looking
       existingSymbols <-
         unique(Portfolio[Portfolio$month == CurrentMonth, c("scrip")])
@@ -460,29 +481,29 @@ for (d in StartingIndex:length(StatementDate)) {
       if (length(dupes > 0)) {
         shortlist <- shortlist[-dupes, ]
       }
-      if (DistinctPurchasesThisMonth < TradesPerMonth &&
-          nrow(shortlist) > TradesPerMonth - DistinctPurchasesThisMonth) {
+      if (DistinctPurchasesThisMonth < kTradesPerMonth &&
+          nrow(shortlist) > kTradesPerMonth - DistinctPurchasesThisMonth) {
         shortlist <- shortlist[order(-shortlist$UPSIDE), ]
-        #shortlist<-shortlist[sample(nrow(shortlist),(TradesPerMonth - DistinctPurchasesThisMonth)),]
+        #shortlist<-shortlist[sample(nrow(shortlist),(kTradesPerMonth - DistinctPurchasesThisMonth)),]
         shortlist <-
-          shortlist[1:(TradesPerMonth - DistinctPurchasesThisMonth), ]
+          shortlist[1:(kTradesPerMonth - DistinctPurchasesThisMonth), ]
       }
       if (nrow(shortlist) > 0 &&
-          DistinctPurchasesThisMonth < TradesPerMonth) {
-        InvestmentValue = Gap / (TradesPerMonth - DistinctPurchasesThisMonth)
+          DistinctPurchasesThisMonth < kTradesPerMonth) {
+        InvestmentValue = Gap / (kTradesPerMonth - DistinctPurchasesThisMonth)
         # write BUY to redis
         #if (today == date) {
         redisConnect()
-          redisSelect(Database)
+          redisSelect(kRedisDatabase)
           for (row in 1:nrow(shortlist)) {
             scrip = shortlist[row, 'TICKER']
-            load(paste(path, scrip, ".Rdata", sep = ""))
+            load(paste(kNiftyDataFolder, scrip, ".Rdata", sep = ""))
             price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, 'asettle']
             size = as.integer(InvestmentValue / price)
             longname = paste(scrip, "_STK___", sep = "")
             if (size > 0) {
               position = GetCurrentPosition(scrip, Portfolio)
-              redisRPush(paste("trades", Strategy, sep = ":"),
+              redisRPush(paste("trades", kStrategy, sep = ":"),
                          charToRaw(
                            paste(longname, size, "BUY", 0, position, sep = ":")
                          ))
@@ -501,7 +522,7 @@ for (d in StartingIndex:length(StatementDate)) {
                              date,
                              InvestmentValue,
                              CurrentMonth,
-                             path)
+                             kNiftyDataFolder)
       }
     }
   }
@@ -511,10 +532,10 @@ for (d in StartingIndex:length(StatementDate)) {
 
 Portfolio$profit = ifelse(
   !is.na(Portfolio$sellprice),
-  Portfolio$size * (Portfolio$sellprice - Portfolio$buyprice) - SingleLegTransactionCost /
+  Portfolio$size * (Portfolio$sellprice - Portfolio$buyprice) - kBrokerage /
     100 * Portfolio$size *
     (Portfolio$sellprice + Portfolio$buyprice),
-  Portfolio$size * (Portfolio$mtm - Portfolio$buyprice) - SingleLegTransactionCost /
+  Portfolio$size * (Portfolio$mtm - Portfolio$buyprice) - kBrokerage /
     100 * Portfolio$size *
     (Portfolio$mtm + Portfolio$buyprice)
 )
@@ -566,7 +587,7 @@ if (nrow(Portfolio) > 0) {
             winratio = winratio,
             profit = profit
           ))
-  save(Portfolio,file="Portfolio.Rdata")
+  save(Portfolio,file=paste("Portfolio_",args[2],".Rdata",sep=""))
   ActualPortfolioValue <-
     ifelse(ActualPortfolioValue == 0, NA_real_, ActualPortfolioValue)
   ActualPortfolioValue <-
