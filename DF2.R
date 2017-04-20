@@ -2,8 +2,8 @@
 library(XML)
 assign("last.warning", NULL, envir = baseenv())
 folder="20160923"
-#setwd("C:/Users/Pankaj/Documents/Seafile/servers/FundamentalData/20160730")
-setwd(paste("/home/psharma/Seafile/servers/FundamentalData/",folder,sep=""))
+#setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
+setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
 GetLastDay <- function(year, month)
 {
@@ -404,3 +404,5 @@ for(i in 1:length(Result)){
     print(paste(Result[[i]][2],Result[[i]][6],length(Result[[i]])))
   }
 }
+
+df2$Type=df1[match(df2$COA,df1$COA),c("Type")]

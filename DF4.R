@@ -6,8 +6,8 @@ library(zoo)
 generatedf4=TRUE
 
 folder="20160923"
-#setwd("C:/Users/Pankaj/Documents/Seafile/servers/FundamentalData/20160730")
-setwd(paste("/home/psharma/Seafile/servers/FundamentalData/",folder,sep=""))
+#setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
+setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
 slope <- function (x) {
         res <- (lm(log(x) ~ seq(1:length(x))))
@@ -62,6 +62,7 @@ df4 <-
     CMIN = integer(0),
     SINN = integer(0),
     COMMON_SHARE_OUTSTANDING_IN_MILLIONS = integer(0),
+    sharesOutstandingDate=as.Date(character()),
     LATEST_SHARE_PRICE = integer(0),
     THEORETICALVALUE = integer(0),
     UPSIDE = integer(0),
@@ -193,6 +194,7 @@ for (i in 1:length(symbols))
     commonSharesOutstanding <-  df3[df3$CompanyName == nameComp, 'SharesOutstanding']
     commonSharesOutstanding <- as.numeric(commonSharesOutstanding)
     commonSharesOutstandingInMillions <- commonSharesOutstanding / 1000000
+    shareoutstandingdate<-(df3[df3$CompanyName == nameComp, 'SharesOutstandingDate'])
     if(length(commonSharesOutstanding)>0){
       
     lastPrice <-as.numeric(df3[df3$CompanyName == nameComp, 'LastPrice'])
@@ -287,6 +289,7 @@ for (i in 1:length(symbols))
         valueCMIN,
         valueSINN,
         commonSharesOutstandingInMillions,
+        shareoutstandingdate,
         lastPrice,
         trunc(theoreticalShareValue, 0),
         trunc(value, 0),
@@ -321,20 +324,25 @@ df4$r=-1
 df4$sumproduct=-1
 df4$OverSold=FALSE
 
+startdate=as.Date(strptime(paste(finyear-1,"03","31",sep="-"),format="%Y-%m-%d"),tz="Asia/Kolkata")
+enddate=as.Date(strptime(paste(finyear,"03","31",sep="-"),format="%Y-%m-%d"),tz="Asia/Kolkata")
+startdate=adjust.next(startdate)
+enddate=adjust.previous(enddate)
+
 for (i in 1:nrow(df4)){
   symbol=df4[i,'TICKER']
   print(paste("Processing Daily Data:",symbol,sep=""))
-  if (file.exists(paste("/home/psharma/Seafile/rfiles/daily/", symbol, ".Rdata", sep = ""))){
-    load(paste("/home/psharma/Seafile/rfiles/daily/", symbol, ".Rdata", sep = ""))
-    df4$CurrentRSI[i]=tail(RSI(md$settle, RSIPeriod),1)
-    endlength=length(md$settle)
-    if(endlength>251){
-      startlength=endlength-251
-      df4$OverSold[i] = tail(runSum(RSI(md$settle, 2) < 20, 2) ==2,1)
-      df4$AnnualizedSlope[i] = exp(slope(md$settle[startlength:endlength]))^252-1
-      df4$r[i]=r2(md$settle[startlength:endlength])
+  if (file.exists(paste("/home/psharma/Dropbox/rfiles/daily/", symbol, ".Rdata", sep = ""))){
+    load(paste("/home/psharma/Dropbox/rfiles/daily/", symbol, ".Rdata", sep = ""))
+    startindex=which(as.Date(md$date,tz="Asia/Kolkata")==startdate)
+    endindex=which(as.Date(md$date,tz="Asia/Kolkata")==enddate)
+    if(length(startindex)==1 && startindex>251){
+      df4$CurrentRSI[i]=RSI(md$settle, RSIPeriod)[startindex]
+      df4$OverSold[i] = (runSum(RSI(md$settle, 2) < 20, 2) ==2)[startindex]
+      df4$AnnualizedSlope[i] = exp(slope(md$settle[(startindex-251):startindex]))^252-1
+      df4$r[i]=r2(md$settle[(startindex-251):startindex])
       df4$sumproduct[i]=df4$AnnualizedSlope[i]*df4$r[i]
-      lastprice=md$settle[length(md$settle)]
+      lastprice=md$settle[startindex]
       df4$UPSIDE[i]=(df4$THEORETICALVALUE[i]-lastprice)*100/lastprice
       df4$UPSIDE[i]=trunc(df4$UPSIDE[i],0)
       df4$UPSIDE[i]=as.numeric(df4$UPSIDE[i])

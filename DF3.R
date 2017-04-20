@@ -2,8 +2,8 @@
 
 library(XML);
 folder="20160923"
-#setwd("C:/Users/Pankaj/Documents/Seafile/servers/FundamentalData/20160730")
-setwd(paste("/home/psharma/Seafile/servers/FundamentalData/",folder,sep=""))
+#setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
+setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
 # Opening files in R
 
