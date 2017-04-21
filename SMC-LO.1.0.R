@@ -196,7 +196,7 @@ GetDF4FileName <- function(date) {
   fileName
 }
 
-UpdateDF4Upside <- function(df4, settledate,datafolder) {
+UpdateDF4Upside <- function(df4, settledate,datafolder,WorkingDaysForSlope=252) {
         #update symbols with current symbol
         splits <-
                 read.csv(
@@ -231,26 +231,26 @@ UpdateDF4Upside <- function(df4, settledate,datafolder) {
         for (i in 1:nrow(df4)) {
                 symbol = df4[i, 'TICKER']
                 if (file.exists(paste(
-                        kNiftyDataFolder,
+                        datafolder,
                         symbol,
                         ".Rdata",
                         sep = ""
                 ))) {
                         load(paste(
-                                kNiftyDataFolder,
+                                datafolder,
                                 symbol,
                                 ".Rdata",
                                 sep = ""
                         ))
                         endlength = which(md$date == settledate)
-                        if (length(endlength) == 1 && endlength > (kWorkingDaysForSlope-1)) {
+                        if (length(endlength) == 1 && endlength > (WorkingDaysForSlope-1)) {
                                 #print(md$symbol)
                                 df4$CurrentRSI[i] = RSI(md$asettle, 2)[endlength]
-                                startlength = endlength - (kWorkingDaysForSlope-1)
+                                startlength = endlength - (WorkingDaysForSlope-1)
                                 OverSold = runSum(RSI(md$asettle, 2) < 20, 2) == 2
                                 df4$OverSold[i] = OverSold[endlength]
                                 df4$AnnualizedSlope[i] = exp(slope(md$asettle[startlength:endlength])) ^
-                                        kWorkingDaysForSlope - 1
+                                        WorkingDaysForSlope - 1
                                 df4$r[i] = r2(md$asettle[startlength:endlength])
                                 df4$sumproduct[i] = df4$AnnualizedSlope[i] * df4$r[i]
                                 lastprice = md$asettle[endlength]
@@ -505,7 +505,7 @@ for (d in StartingIndex:length(StatementDate)) {
                     DistinctPurchasesThisMonth < kTradesPerMonth &&
                     date < as.Date(kBackTestEndDate)) {
                         load(GetDF4FileName(date))
-                        df4 = df4[df4$UPSIDE > kUpside / 2,] # get a smaller list of df4 that has a positive upside
+                        df4 = df4[df4$UPSIDE > (kUpside -50),] # get a smaller list of df4 that has a positive upside
                         df4 <-
                                 UpdateDF4Upside(df4, as.character(date),kNiftyDataFolder)
                         # print(paste("Processing Buy for d2:", d,",date:",date, sep = ""))
@@ -657,19 +657,27 @@ if(args[1]==2){ # BackTest
                 na.locf(ActualPortfolioValue, na.rm = FALSE)
         ActualPortfolioValue <-
                 ifelse(is.na(ActualPortfolioValue), 0, ActualPortfolioValue)
-        DailyPNL <-
-                (RealizedProfit + UnRealizedProfit) - Ref(RealizedProfit + UnRealizedProfit, -1)
-        DailyPNL <- ifelse(is.na(DailyPNL), 0, DailyPNL)
-        DailyReturn <-
-                ifelse(ActualPortfolioValue == 0, 0, DailyPNL / ActualPortfolioValue)
-        df <- data.frame(time = StatementDate, return = DailyReturn)
-        df <- read.zoo(df)
-        sharpe <-
-                SharpeRatio((df[df != 0][, 1, drop = FALSE]), Rf = .07 / 365, FUN = "StdDev") *
-                sqrt(kWorkingDaysForSlope)
+        # DailyPNL<-RealizedProfit+UnRealizedProfit
+        # workingdays<-which(DailyPNL!=Ref(DailyPNL,-1))
+        # DailyPNLWorking<-DailyPNL[workingdays]-Ref(DailyPNL[workingdays],-1)
+        # DailyPNLWorking <- ifelse(is.na(DailyPNLWorking), 0, DailyPNLWorking)
+        # StatementDateWorking<-StatementDate[workingdays]
+        # DailyReturnWorking<-ifelse(ActualPortfolioValue[workingdays] == 0, 0, DailyPNLWorking / ActualPortfolioValue[workingdays])
+        # df <- data.frame(time = StatementDate[workingdays], return = DailyReturnWorking)
+        # df <- read.zoo(df)
+        # sharpe <-
+        #         SharpeRatio((df[df != 0][, 1, drop = FALSE]), Rf = .07 / 365, FUN = "StdDev") *
+        #         sqrt(kWorkingDaysForSlope)
         
         pnl<-data.frame(bizdays=as.Date(StatementDate,tz=kTimeZone),realized=0,unrealized=0,brokerage=0)
         cumpnl<-CalculateDailyPNL(Portfolio,pnl,kNiftyDataFolder,kBrokerage,per.contract.brokerage = FALSE,deriv=FALSE)
+        DailyPNL<-cumpnl$realized+cumpnl$unrealized-cumpnl$brokerage
+        workingdays<-which(DailyPNL!=Ref(DailyPNL,-1))
+        DailyPNLWorking<-DailyPNL[workingdays]-Ref(DailyPNL[workingdays],-1)
+        DailyPNLWorking <- ifelse(is.na(DailyPNLWorking), 0, DailyPNLWorking)
+        StatementDateWorking<-StatementDate[workingdays]
+        DailyReturnWorking<-ifelse(ActualPortfolioValue[workingdays] == 0, 0, DailyPNLWorking / ActualPortfolioValue[workingdays])
+        sharpe<-sharpe(DailyReturnWorking)
         
         my.range <- range(ActualPortfolioValue)
         plot(x = StatementDate,
@@ -697,6 +705,16 @@ if(args[1]==2){ # BackTest
         maxProfit=max(cumpnl$realized+cumpnl$unrealized)
         points=pretty(seq(minProfit,maxProfit,by=(maxProfit-minProfit)/5))
         axis(2,at=points,labels=paste(points/1000000,"M",sep=""),las=1)
+        
+        # DailyReturn
+        plot(x = StatementDateWorking,
+             y = DailyReturnWorking,
+             type = 'l',main="DailyReturn",xlab="Date",ylab="Return",axes=FALSE)
+        axis.Date(1,StatementDate,at=seq(min(StatementDateWorking), max(StatementDateWorking)+90, by="3 mon"),, format="%m-%Y")
+        minProfit=min( DailyReturnWorking)
+        maxProfit=max( DailyReturnWorking)
+        points=pretty(seq(minProfit,maxProfit,by=(maxProfit-minProfit)/5))
+        axis(2,at=points,labels=paste(points*100,"%",sep=""),las=1)
         
         #Cash Buildup
         plot(x = StatementDate,
