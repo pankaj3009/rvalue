@@ -337,12 +337,12 @@ for (i in 1:nrow(df4)){
     startindex=which(as.Date(md$date,tz="Asia/Kolkata")==startdate)
     endindex=which(as.Date(md$date,tz="Asia/Kolkata")==enddate)
     if(length(startindex)==1 && startindex>251){
-      df4$CurrentRSI[i]=RSI(md$settle, RSIPeriod)[startindex]
-      df4$OverSold[i] = (runSum(RSI(md$settle, 2) < 20, 2) ==2)[startindex]
-      df4$AnnualizedSlope[i] = exp(slope(md$settle[(startindex-251):startindex]))^252-1
-      df4$r[i]=r2(md$settle[(startindex-251):startindex])
+      df4$CurrentRSI[i]=RSI(md$asettle, RSIPeriod)[startindex]
+      df4$OverSold[i] = (runSum(RSI(md$asettle, 2) < 20, 2) ==2)[startindex]
+      df4$AnnualizedSlope[i] = exp(slope(md$asettle[(startindex-251):startindex]))^252-1
+      df4$r[i]=r2(md$asettle[(startindex-251):startindex])
       df4$sumproduct[i]=df4$AnnualizedSlope[i]*df4$r[i]
-      lastprice=md$settle[startindex]
+      lastprice=md$asettle[startindex]
       df4$UPSIDE[i]=(df4$THEORETICALVALUE[i]-lastprice)*100/lastprice
       df4$UPSIDE[i]=trunc(df4$UPSIDE[i],0)
       df4$UPSIDE[i]=as.numeric(df4$UPSIDE[i])
