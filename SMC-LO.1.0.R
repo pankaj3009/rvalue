@@ -197,32 +197,40 @@ GetDF4FileName <- function(date) {
 }
 
 UpdateDF4Upside <- function(df4, settledate,datafolder,WorkingDaysForSlope=252) {
-        #update symbols with current symbol
-        splits <-
-                read.csv(
-                        paste(datafolder, "/", "splits.csv", sep = ""),
-                        header = TRUE,
-                        stringsAsFactors = FALSE
-                )
-        symbolchange <-
-                read.csv(
-                        paste(datafolder, "/", "symbolchange.csv", sep = ""),
-                        header = TRUE,
-                        stringsAsFactors = FALSE
-                )
-        symbolchange <-
-                data.frame(key = symbolchange$SM_KEY_SYMBOL,
-                           newsymbol = symbolchange$SM_NEW_SYMBOL)
+        redisConnect()
+        redisSelect(2)
+        #update splits
+        a<-unlist(redisSMembers("splits")) # get values from redis in a vector
+        tmp <- (strsplit(a, split="_")) # convert vector to list
+        k<-lengths(tmp) # expansion size for each list element
+        allvalues<-unlist(tmp) # convert list to vector
+        splits <- data.frame(date=1:length(a), symbol=1:length(a),oldshares=1:length(a),newshares=1:length(a),reason=rep("",length(a)),stringsAsFactors = FALSE)
+        for(i in 1:length(a)) {
+                for(j in 1:k[i]){
+                        runsum=cumsum(k)[i]
+                        splits[i, j] <- allvalues[runsum-k[i]+j]
+                }
+        }
+        splits$date=as.POSIXct(splits$date,format="%Y%m%d",tz="Asia/Kolkata")
+        
+        #update symbol change
+        a<-unlist(redisSMembers("symbolchange")) # get values from redis in a vector
+        tmp <- (strsplit(a, split="_")) # convert vector to list
+        k<-lengths(tmp) # expansion size for each list element
+        allvalues<-unlist(tmp) # convert list to vector
+        symbolchange <- data.frame(date=rep("",length(a)), key=rep("",length(a)),newsymbol=rep("",length(a)),stringsAsFactors = FALSE)
+        for(i in 1:length(a)) {
+                for(j in 1:k[i]){
+                        runsum=cumsum(k)[i]
+                        symbolchange[i, j] <- allvalues[runsum-k[i]+j]
+                }
+        }
+        symbolchange$date=as.POSIXct(symbolchange$date,format="%Y%m%d",tz="Asia/Kolkata")
         symbolchange$key = gsub("[^0-9A-Za-z/-]", "", symbolchange$key)
         symbolchange$newsymbol = gsub("[^0-9A-Za-z/-]", "", symbolchange$newsymbol)
+        redisClose()
         
-        splits <-
-                data.frame(
-                        date = as.POSIXct(splits$date, tz = "Asia/Kolkata"),
-                        symbol = splits$symbol,
-                        oldshares = splits$oldshares,
-                        newshares = splits$newshares
-                )
+        #update symbols with current symbol
         matches<-match(df4$TICKER,symbolchange$key)
         df4indicestochange<-which(!is.na(matches))
         newsymbolindices=matches[which(!is.na(matches))]
@@ -451,7 +459,7 @@ for (d in StartingIndex:length(StatementDate)) {
                                                 ".Rdata",
                                                 sep = ""
                                         ))
-                                        OverBought = runSum(RSI(md$settle, 2) > kRSIExit,
+                                        OverBought = runSum(RSI(md$asettle, 2) > kRSIExit,
                                                             2) == 2
                                         enddate = which(
                                                 as.Date(md$date, tz = "Asia/Kolkata") == date
@@ -470,7 +478,7 @@ for (d in StartingIndex:length(StatementDate)) {
                                                         sep = ""
                                                 ))
                                                 Portfolio[p, 'exittime'] = as.character(date)
-                                                Portfolio[p, 'exitprice'] = md$settle[enddate]
+                                                Portfolio[p, 'exitprice'] = md$asettle[enddate]
                                                 if(kWriteToRedis){
                                                         redisConnect()
                                                         redisSelect(kRedisDatabase)
