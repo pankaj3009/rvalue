@@ -212,6 +212,8 @@ UpdateDF4Upside <- function(df4, settledate,datafolder,WorkingDaysForSlope=252) 
                 }
         }
         splits$date=as.POSIXct(splits$date,format="%Y%m%d",tz="Asia/Kolkata")
+        splits$oldshares<-as.numeric(splits$oldshares)
+        splits$newshares<-as.numeric(splits$newshares)
         
         #update symbol change
         a<-unlist(redisSMembers("symbolchange")) # get values from redis in a vector
