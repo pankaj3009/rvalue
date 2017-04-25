@@ -163,22 +163,25 @@ CalculateNPV <- function(portfolio, date, path) {
       name = portfolio[l, 'symbol']
       if (is.na(portfolio[l, 'exittime'])) {
         load(paste(path, name, ".Rdata", sep = ""))
-        price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, 'asettle']
+        price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, 'settle']
         #print(paste("Date:",as.character(date),sep=""))
         if (length(price) == 1) {
           portfolio[l, 'mtm'] = price
-          portfolio[l, 'mv'] = portfolio[l, 'size'] * price
+          buyindex= which(as.Date(md$date, tz = "Asia/Kolkata") == portfolio[l,'entrytime'])
+          mtmindex= which(as.Date(md$date, tz = "Asia/Kolkata") == date)
+          splitadjustment=md$splitadjust[buyindex]/md$splitadjust[mtmindex]
+          portfolio[l, 'mv'] = portfolio[l, 'size'] * price * splitadjustment
           npv = npv + portfolio[l, 'mv']
-          unrealizedprofit = unrealizedprofit + portfolio[l, 'size'] * (portfolio[l, 'mtm'] - portfolio[l, 'entryprice']) - kBrokerage /
-            100 * portfolio[l, 'size'] *
-            (portfolio[l, 'mtm'] + portfolio[l, 'entryprice'])
+          unrealizedprofit = unrealizedprofit + portfolio[l, 'size'] * splitadjustment* portfolio[l, 'mtm'] - portfolio[l, 'size']*portfolio[l, 'entryprice'] - kBrokerage * portfolio[l, 'size'] * splitadjustment * portfolio[l, 'mtm'] - kBrokerage * portfolio[l, 'size'] * portfolio[l, 'entryprice']
         } else{
           npv = npv + ifelse(is.na(portfolio[l, 'mv']), 0, portfolio[l, 'mv'])
         }
       } else{
-        realizedprofit = realizedprofit + portfolio[l, 'size'] * (portfolio[l, 'exitprice'] - portfolio[l, 'entryprice']) - kBrokerage /
-          100 * portfolio[l, 'size'] *
-          (portfolio[l, 'exitprice'] + portfolio[l, 'entryprice'])
+              load(paste(path, name, ".Rdata", sep = ""))
+              buyindex= which(as.Date(md$date, tz = "Asia/Kolkata") == portfolio[l,'entrytime'])
+              sellindex= which(as.Date(md$date, tz = "Asia/Kolkata") == portfolio[l,"exittime"])
+              splitadjustment=md$splitadjust[buyindex]/md$splitadjust[sellindex]
+        realizedprofit = realizedprofit + portfolio[l, 'size'] * splitadjustment* portfolio[l, 'exitprice'] - portfolio[l, 'size']* portfolio[l, 'entryprice'] - kBrokerage * portfolio[l, 'size'] * splitadjustment * portfolio[l, 'exitprice'] -kBrokerage * portfolio[l, 'size']*portfolio[l, 'entryprice']
       }
     }
   }
@@ -312,7 +315,7 @@ UpdatePortfolioBuy <-
       for (s in 1:nrow(shortlist)) {
         symbol = shortlist[s, ]$TICKER
         load(paste(path, symbol, ".Rdata", sep = ""))
-        price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, "asettle"]
+        price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, "settle"]
         if (length(price) > 0) {
           size = as.integer(value / price)
           if (size > 0) {
@@ -341,18 +344,18 @@ UpdatePortfolioBuy <-
     portfolio
   }
 
-GetCurrentPosition <- function(symbol, portfolio) {
-  position <- 0
-  if(nrow(portfolio)>0){
-    for (row in 1:nrow(portfolio)) {
-      if (is.na(portfolio[row, 'exittime']) &&
-          portfolio[row, 'symbol'] == symbol) {
-        position = position + portfolio[row, 'size']
-      }
-    }   
-  }
-  position
-}
+# GetCurrentPosition <- function(symbol, portfolio) {
+#   position <- 0
+#   if(nrow(portfolio)>0){
+#     for (row in 1:nrow(portfolio)) {
+#       if (is.na(portfolio[row, 'exittime']) &&
+#           portfolio[row, 'symbol'] == symbol) {
+#         position = position + portfolio[row, 'size']
+#       }
+#     }   
+#   }
+#   position
+# }
 
 
 
@@ -434,6 +437,7 @@ if (nrow(Portfolio) > 0) {
 
 StartingIndex = which(StatementDate == StartingDate)
 
+#for (d in StartingIndex:399) {
 for (d in StartingIndex:length(StatementDate)) {
         date = StatementDate[d]
         if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
@@ -479,18 +483,21 @@ for (d in StartingIndex:length(StatementDate)) {
                                                         d,
                                                         sep = ""
                                                 ))
+                                                origposition<-GetCurrentPosition(symbol,Portfolio,path=kNiftyDataFolder,position.on = date)
                                                 Portfolio[p, 'exittime'] = as.character(date)
-                                                Portfolio[p, 'exitprice'] = md$asettle[enddate]
+                                                Portfolio[p, 'exitprice'] = md$settle[enddate]
                                                 if(kWriteToRedis){
                                                         redisConnect()
                                                         redisSelect(kRedisDatabase)
-                                                        size = portfolio[p, 'size']
-                                                        longname = paste(scrip, "_STK___", sep = "")
+                                                        buyindex= which(as.Date(md$date, tz = "Asia/Kolkata") == Portfolio[p,'entrytime'])
+                                                        sellindex= which(as.Date(md$date, tz = "Asia/Kolkata") == date)
+                                                        size = Portfolio[p, 'size']*md$splitadjust[buyindex]/md$splitadjust[sellindex]
+                                                        size=floor(size)
+                                                        longname = paste(symbol, "_STK___", sep = "")
                                                         if (size > 0) {
-                                                                position = GetCurrentPosition(scrip, Portfolio)
                                                                 redisRPush(paste("trades", kStrategy, sep = ":"),
                                                                            charToRaw(
-                                                                                   paste(longname, size, "SELL", 0, position, sep = ":")
+                                                                                   paste(longname, size, "SELL", 0, origposition, sep = ":")
                                                                            ))
                                                         }
                                                         
@@ -552,11 +559,12 @@ for (d in StartingIndex:length(StatementDate)) {
                                         for (row in 1:nrow(shortlist)) {
                                                 scrip = shortlist[row, 'TICKER']
                                                 load(paste(kNiftyDataFolder, scrip, ".Rdata", sep = ""))
-                                                price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, 'asettle']
+                                                price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, 'settle']
                                                 size = as.integer(InvestmentValue / price)
                                                 longname = paste(scrip, "_STK___", sep = "")
                                                 if (size > 0) {
-                                                        position = GetCurrentPosition(scrip, Portfolio)
+                                                        position=GetCurrentPosition(scrip,Portfolio,path=kNiftyDataFolder,position.on = date)
+                                                        #position = GetCurrentPosition(scrip, Portfolio)
                                                         redisRPush(paste("trades", kStrategy, sep = ":"),
                                                                    charToRaw(
                                                                            paste(longname, size, "BUY", 0, position, sep = ":")
@@ -601,16 +609,6 @@ RealizedProfit[d] = out[[3]]
 UnRealizedProfit[d] = out[[4]]
 
 #stopCluster(cl)
-Portfolio$profit = ifelse(
-        !is.na(Portfolio$exitprice),
-        Portfolio$size * (Portfolio$exitprice - Portfolio$entryprice) - kBrokerage /
-                100 * Portfolio$size *
-                (Portfolio$exitprice + Portfolio$entryprice),
-        Portfolio$size * (Portfolio$mtm - Portfolio$entryprice) - kBrokerage /
-                100 * Portfolio$size *
-                (Portfolio$mtm + Portfolio$entryprice)
-)
-
 UnRealizedProfit <- na.locf(UnRealizedProfit, na.rm = FALSE)
 UnRealizedProfit <- na.locf(UnRealizedProfit, fromLast = TRUE)
 
@@ -623,7 +621,7 @@ Gap <- na.locf(Gap, fromLast = TRUE)
 maxdddate = which(RealizedProfit + UnRealizedProfit == min(RealizedProfit +
                                                                    UnRealizedProfit))
 
-cashflow <- CashFlow(Portfolio, StatementDate,kBrokerage/100)
+cashflow <- CashFlow(Portfolio, StatementDate,kBrokerage)
 cashflow[length(cashflow)] <- cashflow[length(cashflow)] + npv
 if(sum(cashflow)>0){
         irr <- xirr(cashflow, StatementDate) * 100
@@ -639,6 +637,14 @@ if(length(naindices)>0){
         Portfolio[naindices,]$profit<-0       
 }
 Portfolio$exitprice<-ifelse(is.na(Portfolio$exittime),Portfolio$mtm,Portfolio$exitprice)
+
+for(p in 1:nrow(Portfolio)){
+        load(paste(kNiftyDataFolder, Portfolio[p,'symbol'], ".Rdata", sep = ""))
+        buyindex= which(as.Date(md$date, tz = "Asia/Kolkata") == Portfolio[p,'entrytime'])
+        sellindex= ifelse(is.na(Portfolio$exittime[p]),nrow(md),which(as.Date(md$date, tz = "Asia/Kolkata") == Portfolio[p,'exittime']))
+        splitadjust=md$splitadjust[buyindex]/md$splitadjust[sellindex]
+        Portfolio$profit[p]=Portfolio$size[p] *(splitadjust * Portfolio$exitprice[p] - Portfolio$entryprice[p])- kBrokerage * Portfolio$size[p] * (Portfolio$exitprice[p]*splitadjust + Portfolio$entryprice[p])
+     }
 
 
 
