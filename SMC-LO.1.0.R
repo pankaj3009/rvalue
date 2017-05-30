@@ -234,7 +234,7 @@ UpdateDF4Upside <- function(df4, settledate,datafolder,WorkingDaysForSlope=252) 
         symbolchange$key = gsub("[^0-9A-Za-z/-]", "", symbolchange$key)
         symbolchange$newsymbol = gsub("[^0-9A-Za-z/-]", "", symbolchange$newsymbol)
         redisClose()
-        
+        symbolchange<-symbolchange[symbolchange$date<=as.POSIXct(date,format="%Y%m%d",tz="Asia/Kolkata"),]
         #update symbols with current symbol
         matches<-match(df4$TICKER,symbolchange$key)
         df4indicestochange<-which(!is.na(matches))
