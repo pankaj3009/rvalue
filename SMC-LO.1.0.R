@@ -268,16 +268,19 @@ UpdateDF4Upside <- function(df4, settledate,datafolder,WorkingDaysForSlope=252) 
                                 df4$sumproduct[i] = df4$AnnualizedSlope[i] * df4$r[i]
                                 lastprice = md$asettle[endlength]
                                 shareoutstandingindex=tail(which(as.Date(md$date,tz="Asia/Kolkata")<=df4$sharesOutstandingDate[i]),1)
-                                if(!is.na(df4$sharesOutstandingDate) && as.Date(settledate,tz="Asia/Kolkata")>df4$sharesOutstandingDate){
-                                        df4$THEORETICALVALUE[i]=df4$THEORETICALVALUE[i]/md[shareoutstandingindex,'splitadjust']
-                                        #print(paste(symbol,df4$sharesOutstandingDate,settledate,sep=","))
+                                if(length(shareoutstandingindex)==1){
+                                        if(!is.na(df4$sharesOutstandingDate) && as.Date(settledate,tz="Asia/Kolkata")>df4$sharesOutstandingDate){
+                                                df4$THEORETICALVALUE[i]=df4$THEORETICALVALUE[i]/md[shareoutstandingindex,'splitadjust']
+                                                #print(paste(symbol,df4$sharesOutstandingDate,settledate,sep=","))
+                                        }
+                                        df4$UPSIDE[i] = (df4$THEORETICALVALUE[i] - lastprice) * 100 / lastprice
+                                        df4$UPSIDE[i] = trunc(df4$UPSIDE[i], 0)
+                                        df4$UPSIDE[i] = as.numeric(df4$UPSIDE[i])
+                                        df4$LATEST_SHARE_PRICE[i] = lastprice
+                                        df4$MCAP[i] = as.numeric(df4$COMMON_SHARE_OUTSTANDING_IN_MILLIONS[i]) *
+                                                lastprice* md[shareoutstandingindex,'splitadjust'] / 1000
+                                        
                                 }
-                                df4$UPSIDE[i] = (df4$THEORETICALVALUE[i] - lastprice) * 100 / lastprice
-                                df4$UPSIDE[i] = trunc(df4$UPSIDE[i], 0)
-                                df4$UPSIDE[i] = as.numeric(df4$UPSIDE[i])
-                                df4$LATEST_SHARE_PRICE[i] = lastprice
-                                df4$MCAP[i] = as.numeric(df4$COMMON_SHARE_OUTSTANDING_IN_MILLIONS[i]) *
-                                        lastprice* md[shareoutstandingindex,'splitadjust'] / 1000
                         }else{
                                 # data does not exist for a year...
                                 df4$UPSIDE[i] = -10000
@@ -441,7 +444,7 @@ StartingIndex = which(StatementDate == StartingDate)
 for (d in StartingIndex:length(StatementDate)) {
         date = StatementDate[d]
         if (length(grep("S(at|un)", weekdays(date, abbr = TRUE))) == 0) {
-                print(paste("Processing d:", d, sep = ""))
+                print(paste("Processing date:", date, sep = ""))
                 #weekday
                 out = CalculateNPV(Portfolio, date, kNiftyDataFolder)
                 npv = out[[1]]
