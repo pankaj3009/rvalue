@@ -1,7 +1,7 @@
 #library(doParallel)
 library(XML)
 assign("last.warning", NULL, envir = baseenv())
-folder="20160923"
+folder="20170630"
 #setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
 setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
@@ -44,7 +44,7 @@ if (length(args) > 0)
 
 
 } else{
-  finyear = "2015"
+  finyear = "2017"
 
 }
 
@@ -406,3 +406,4 @@ for(i in 1:length(Result)){
 }
 
 df2$Type=df1[match(df2$COA,df1$COA),c("Type")]
+save(df2,file="df2.Rdata")

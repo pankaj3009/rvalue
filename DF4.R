@@ -2,10 +2,11 @@ library(XML)
 library(gdata)
 library(TTR)
 library(zoo)
+library(bizdays)
 
 generatedf4=TRUE
 
-folder="20160923"
+folder="20170630"
 #setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
 setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
@@ -32,7 +33,7 @@ if (length(args) > 0)
   seedWACC <- args[8]
   
 } else{
-  finyear = 2016
+  finyear = 2017
   taxRate = 0.30
   floorInterestRate = 0.09
   growthRate = 0.05
@@ -352,3 +353,4 @@ for (i in 1:nrow(df4)){
 }
 
 shortlist<-df4[df4$UPSIDE>50 & df4$DIVIDENDPAYOUTPERC>10 & df4$ROCE>20 & df4$AnnualizedSlope>0 & df4$r>0.5,]
+save(df4,file="df4.Rdata")

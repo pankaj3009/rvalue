@@ -1,6 +1,6 @@
 # Creating Dataframe with a given XML file with parsing completed
 library(XML)
-folder="20160923"
+folder="20170630"
 #setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
 setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
@@ -50,3 +50,4 @@ df1 <-
   ), stringsAsFactors = FALSE)
 colnames(df1) <- c("COA", "Description", "Type")
 df1 <- unique(df1, by = "COA")
+save(df1,file="df1.Rdata")

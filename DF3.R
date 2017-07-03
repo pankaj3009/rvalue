@@ -1,7 +1,8 @@
 #For the Files of the type snapshot
 
 library(XML);
-folder="20160923"
+#folder="20160923"
+folder="20170630"
 #setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
 setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
@@ -116,4 +117,6 @@ for (j in 1:length(files))
   n.row <- c(companyName,recentSplitDate,recentSplitRatio,employees,sharesOutstandingDate,sharesOutstanding,totalfloat,
              commonShareHolders,codeTRBC,priceCurrency,reportingCurrency,exchangeRate,pDate,lastPrice,high,low,avgVol,eV)
   df3[nrow(df3)+1,] <- n.row   
-  }
+}
+
+save(df3,file="df3.Rdata")
