@@ -41,9 +41,10 @@ kCommittedCapital = as.numeric(static$CommittedCapital)
 kLogFile = static$LogFile
 kHolidayFile = static$HolidayFile
 kStrategy = args[2]
+kRequireOverSold = as.logical(static$RequireOversold)
 kRedisDatabase = as.numeric(args[3])
 
-
+kSimulation = FALSE
 
 logger <- create.logger()
 logfile(logger) <- kLogFile
@@ -182,7 +183,9 @@ CalculateNPV <- function(portfolio, date, path) {
                                         mtmindex = which(
                                                 as.Date(md$date, tz = "Asia/Kolkata") == date
                                         )
+                                        
                                         splitadjustment = md$splitadjust[buyindex] / md$splitadjust[mtmindex]
+                                        splitadjustment = 1
                                         portfolio[l, 'mv'] = portfolio[l, 'size'] * price * splitadjustment
                                         npv = npv + portfolio[l, 'mv']
                                         unrealizedprofit = unrealizedprofit + portfolio[l, 'size'] * splitadjustment * portfolio[l, 'mtm'] - portfolio[l, 'size'] *
@@ -197,6 +200,7 @@ CalculateNPV <- function(portfolio, date, path) {
                                 buyindex = which(as.Date(md$date, tz = "Asia/Kolkata") == portfolio[l, 'entrytime'])
                                 sellindex = which(as.Date(md$date, tz = "Asia/Kolkata") == portfolio[l, "exittime"])
                                 splitadjustment = md$splitadjust[buyindex] / md$splitadjust[sellindex]
+                                splitadjustment = 1
                                 realizedprofit = realizedprofit + portfolio[l, 'size'] * splitadjustment * portfolio[l, 'exitprice'] - portfolio[l, 'size'] * portfolio[l, 'entryprice'] - kBrokerage * portfolio[l, 'size'] * splitadjustment * portfolio[l, 'exitprice'] -
                                         kBrokerage * portfolio[l, 'size'] * portfolio[l, 'entryprice']
                         }
@@ -280,12 +284,12 @@ UpdateDF4Upside <-
                 redisClose()
                 symbolchange <-
                         symbolchange[symbolchange$date <= as.POSIXct(date, format = "%Y%m%d", tz =
-                                                                             "Asia/Kolkata"),]
+                                                                             "Asia/Kolkata"), ]
                 #update symbols with current symbol
                 matches <- match(df4$TICKER, symbolchange$key)
                 df4indicestochange <- which(!is.na(matches))
                 newsymbolindices = matches[which(!is.na(matches))]
-                df4[df4indicestochange,]$TICKER <-
+                df4[df4indicestochange, ]$TICKER <-
                         symbolchange$newsymbol[newsymbolindices]
                 
                 for (i in 1:nrow(df4)) {
@@ -373,7 +377,7 @@ UpdatePortfolioBuy <-
                  path) {
                 if (nrow(shortlist) > 0) {
                         for (s in 1:nrow(shortlist)) {
-                                symbol = shortlist[s, ]$TICKER
+                                symbol = shortlist[s,]$TICKER
                                 load(paste(path, symbol, ".Rdata", sep = ""))
                                 price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, "settle"]
                                 if (length(price) > 0) {
@@ -412,482 +416,433 @@ UpdatePortfolioBuy <-
                 portfolio
         }
 
-#### ALGORITHM ####
-#DaysSinceStart = as.numeric(Sys.Date() - as.Date(StrategyStartDate)) + 1
-for (kThresholdROCE in c(15,20)) {
-        for (kR2Fit in c(70,80)) {
-                for (rsi in c(1,2)) {
-                        if (rsi == 1) {
-                                kRSIEntry = 30
-                                kRSIExit = 70
-                        } else{
-                                kRSIEntry = 20
-                                kRSIExit = 80
-                        }
-                        for (os in c(1,2)) {
-                                if (os == 1) {
-                                        kRequireOverSold = TRUE
-                                } else{
-                                        kRequireOverSold = FALSE
-                                }
-                                
-                                Summary = data.frame(
-                                        irr = as.numeric(),
-                                        profit = as.numeric(),
-                                        winratio = as.numeric(),
-                                        stringsAsFactors = FALSE
-                                )
-                                
-                                StatementDate = seq.Date(
-                                        from = as.Date(kBackTestStartDate),
-                                        to = min(
-                                                Sys.Date(),
-                                                as.Date(kBackTestCloseAllDate)
-                                        ),
-                                        1
-                                )
-                                TargetPortfolioValue = numeric(length(StatementDate))
-                                ActualPortfolioValue = rep(NA_real_,
-                                                           length(StatementDate))
-                                Gap = rep(NA_real_,
-                                          length(StatementDate))
-                                RealizedProfit = rep(NA_real_,
-                                                     length(StatementDate))
-                                UnRealizedProfit = rep(NA_real_,
-                                                       length(StatementDate))
-                                
-                                TargetPortfolioValue = rep(kCommittedCapital,
-                                                           length(StatementDate))
-                                Cash = rep(0, length(StatementDate))
-                                MonthsElapsed = sapply(
-                                        StatementDate,
-                                        MonthsSinceStart,
-                                        as.Date(kBackTestStartDate)
-                                ) +
-                                        1
-                                TargetPortfolioValue = pmin(
-                                        TargetPortfolioValue * MonthsElapsed / kDeployMonths,
-                                        TargetPortfolioValue
-                                )
-                                # allow buildup of portfolio with interest
-                                Interest = TargetPortfolioValue * kCapitalGrowth / 365
-                                Interest = cumsum(Interest)
-                                TargetPortfolioValue = TargetPortfolioValue + Interest
-                                indexOfSystematicSellStart = which(StatementDate == min(
-                                        Sys.Date(),
-                                        as.Date(kBackTestEndDate) +
-                                                1
-                                ))
-                                indexOfSystematicSellEnd = which(StatementDate == min(
-                                        Sys.Date(),
-                                        as.Date(kBackTestCloseAllDate)
-                                ))
-                                TargetPortfolioValue[indexOfSystematicSellStart:indexOfSystematicSellEnd] =
-                                        seq(
-                                                from = TargetPortfolioValue[indexOfSystematicSellStart],
-                                                to = 0,
-                                                length.out = (
-                                                        indexOfSystematicSellEnd - indexOfSystematicSellStart + 1
+updatePortfolioSplits<-function(Portfolio,splits){
+        for (p  in 1:nrow(Portfolio)) {
+                if (is.na(Portfolio$exittime[p])) {
+                        symbol = Portfolio$symbol[p]
+                        entrydate = Portfolio$entrytime[p]
+                        adjentrydate = advance(
+                                calendar = "India",
+                                dates = entrydate,
+                                n = 2,
+                                timeUnit = 0,
+                                bdc = 0,
+                                emr = 0
+                        )
+                        splitentries = splits[splits$symbol ==
+                                                      symbol & splits$date >= adjentrydate, ]
+                        # we make a strong assumption here.
+                        # 1. there will be a maximum of 1 split/bonus for any date i.e. we will not have both bonus and split.
+                        if (nrow(splitentries) >
+                            0 &
+                            nrow(Portfolio[Portfolio$symbol == symbol &
+                                           Portfolio$entrytime == entrydate, ]) == 1) {
+                                for (a in 1:nrow(splitentries)) {
+                                        oldshare = splitentries$oldshares[a]
+                                        newshare =
+                                                splitentries$newshares[a]
+                                        additionalshare =
+                                                as.integer(
+                                                        Portfolio$size[p] * newshare / oldshare
                                                 )
-                                        )
-                                if (indexOfSystematicSellEnd < length(TargetPortfolioValue)) {
-                                        TargetPortfolioValue[indexOfSystematicSellEnd + 1:length(TargetPortfolioValue)] =
+                                        additionalshare =
+                                                additionalshare - Portfolio$size[p]
+                                        newrecord =
+                                                Portfolio[p, ]
+                                        newrecord$size =
+                                                additionalshare
+                                        newrecord$entryprice =
                                                 0
-                                }
-                                
-                                if (args[1] == 2 ||
-                                    !file.exists(paste(
-                                            "Portfolio_",
-                                            args[2],
-                                            ".Rdata",
-                                            sep = ""
-                                    ))) {
-                                        Portfolio = data.frame(
-                                                symbol = as.character(),
-                                                size = as.numeric(),
-                                                trade = as.character(),
-                                                entrytime = as.character(),
-                                                entryprice = as.numeric(),
-                                                exittime = as.character(),
-                                                exitprice = as.numeric(),
-                                                mtm = as.numeric(),
-                                                mv = as.numeric(),
-                                                month = as.numeric(),
-                                                profit = as.numeric(),
-                                                stringsAsFactors = FALSE
-                                        )
-                                } else{
-                                        load(
+                                        newrecord$profit =
+                                                newrecord$mtm * newrecord$size
+                                        newrecord$mv =
+                                                newrecord$mtm * newrecord$size
+                                        Portfolio =
+                                                rbind(Portfolio,
+                                                      newrecord)
+                                        levellog(
+                                                logger,
+                                                "INFO",
                                                 paste(
-                                                        "Portfolio_",
-                                                        args[2],
-                                                        ".Rdata",
-                                                        sep = ""
+                                                        "split",
+                                                        symbol,
+                                                        entrydate
                                                 )
                                         )
                                 }
-                                
-                                StartingDate = as.Date(kBackTestStartDate)
-                                if (nrow(Portfolio) > 0) {
-                                        for (row in 1:nrow(Portfolio)) {
-                                                if (!is.na(Portfolio[row, 'exittime'])) {
-                                                        tempDate = as.Date(Portfolio[row, 'entrytime'])
-                                                        StartingDate = ifelse(
-                                                                tempDate > StartingDate,
-                                                                tempDate,
-                                                                StartingDate
-                                                        )
-                                                } else{
-                                                        tempDate = as.Date(Portfolio[row, 'entrytime'])
-                                                        StartingDate = ifelse(
-                                                                tempDate > StartingDate,
-                                                                tempDate,
-                                                                StartingDate
-                                                        )
-                                                }
-                                        }
-                                        StartingDate = adjust.next(as.Date(StartingDate) + 1,
-                                                                   "india")
-                                }
-                                
-                                
-                                StartingIndex = which(StatementDate == StartingDate)
-                                # Adjust portfolio  for any splits
-                                #update splits
-                                if(nrow(Portfolio)>0){
-                                redisConnect()
-                                redisSelect(2)
-                                a<-unlist(redisSMembers("splits")) # get values from redis in a vector
-                                tmp <- (strsplit(a, split="_")) # convert vector to list
-                                k<-lengths(tmp) # expansion size for each list element
-                                allvalues<-unlist(tmp) # convert list to vector
-                                splits <- data.frame(date=1:length(a), symbol=1:length(a),oldshares=1:length(a),newshares=1:length(a),reason=rep("",length(a)),stringsAsFactors = FALSE)
-                                for(i in 1:length(a)) {
-                                        for(j in 1:k[i]){
-                                                runsum=cumsum(k)[i]
-                                                splits[i, j] <- allvalues[runsum-k[i]+j]
-                                        }
-                                }
-                                splits$date=as.POSIXct(splits$date,format="%Y%m%d",tz="Asia/Kolkata")
-                                splits$oldshares<-as.numeric(splits$oldshares)
-                                splits$newshares<-as.numeric(splits$newshares)
-                                
-                                for (p  in 1:nrow(Portfolio)){
-                                        if(is.na(Portfolio$exittime[p])){
-                                                symbol=Portfolio$symbol[p]
-                                                entrydate=Portfolio$entrytime[p]
-                                                splitentries=splits[splits$symbol==symbol & splits$date>=entrydate,]
-                                                # we make a strong assumption here.
-                                                # 1. there will be a maximum of 1 split/bonus during the holding period.
-                                                if(nrow(splitentries)>0 & nrow(Portfolio[Portfolio$symbol==symbol & Portfolio$entrytime==entrydate,])==1){
-                                                        for(a in 1:nrow(splitentries)){
-                                                                oldshare=splitentries$oldshares[a]
-                                                                newshare=splitentries$newshares[a]
-                                                                additionalshare=as.integer(Portfolio$size[p]*newshare/oldshare)
-                                                                additionalshare=additionalshare-Portfolio$size[p]
-                                                                newrecord=Portfolio[p,]
-                                                                newrecord$size=additionalshare
-                                                                newrecord$entryprice=0
-                                                                newrecord$profit=newrecord$mtm*newrecord$size
-                                                                newrecord$mv=newrecord$mtm*newrecord$size
-                                                                Portfolio=rbind(Portfolio,newrecord)
-                                                                levellog(logger,"INFO",paste("split",symbol,entrydate))
-                                                        }
-                                                }
-                                        }
-                                        
-                                }
-                                }
-                                #for (d in StartingIndex:34) {
-                                for (d in StartingIndex:length(StatementDate)) {
-                                        date = StatementDate[d]
-                                        if (length(grep(
-                                                "S(at|un)",
-                                                weekdays(date, abbr = TRUE)
-                                        )) == 0) {
-                                                print(
+                        }
+                }
+                
+        }
+        Portfolio
+}
+
+#### ALGORITHM ####
+smclo <- function() {
+        Summary = data.frame(
+                irr = as.numeric(),
+                profit = as.numeric(),
+                winratio = as.numeric(),
+                stringsAsFactors = FALSE
+        )
+        
+        StatementDate = seq.Date(
+                from = as.Date(kBackTestStartDate),
+                to = min(Sys.Date(),
+                         as.Date(kBackTestCloseAllDate)),
+                1
+        )
+        TargetPortfolioValue = numeric(length(StatementDate))
+        ActualPortfolioValue = rep(NA_real_,
+                                   length(StatementDate))
+        Gap = rep(NA_real_,
+                  length(StatementDate))
+        RealizedProfit = rep(NA_real_,
+                             length(StatementDate))
+        UnRealizedProfit = rep(NA_real_,
+                               length(StatementDate))
+        
+        TargetPortfolioValue = rep(kCommittedCapital,
+                                   length(StatementDate))
+        Cash = rep(0, length(StatementDate))
+        MonthsElapsed = sapply(StatementDate,
+                               MonthsSinceStart,
+                               as.Date(kBackTestStartDate)) +
+                1
+        TargetPortfolioValue = pmin(TargetPortfolioValue * MonthsElapsed / kDeployMonths,
+                                    TargetPortfolioValue)
+        # allow buildup of portfolio with interest
+        Interest = TargetPortfolioValue * kCapitalGrowth / 365
+        Interest = cumsum(Interest)
+        TargetPortfolioValue = TargetPortfolioValue + Interest
+        indexOfSystematicSellStart = which(StatementDate == min(Sys.Date(),
+                                                                as.Date(kBackTestEndDate) +
+                                                                        1))
+        indexOfSystematicSellEnd = which(StatementDate == min(Sys.Date(),
+                                                              as.Date(kBackTestCloseAllDate)))
+        TargetPortfolioValue[indexOfSystematicSellStart:indexOfSystematicSellEnd] =
+                seq(
+                        from = TargetPortfolioValue[indexOfSystematicSellStart],
+                        to = 0,
+                        length.out = (
+                                indexOfSystematicSellEnd - indexOfSystematicSellStart + 1
+                        )
+                )
+        if (indexOfSystematicSellEnd < length(TargetPortfolioValue)) {
+                TargetPortfolioValue[indexOfSystematicSellEnd + 1:length(TargetPortfolioValue)] =
+                        0
+        }
+        
+        if (args[1] == 2 ||
+            !file.exists(paste("Portfolio_",
+                               args[2],
+                               ".Rdata",
+                               sep = ""))) {
+                Portfolio = data.frame(
+                        symbol = as.character(),
+                        size = as.numeric(),
+                        trade = as.character(),
+                        entrytime = as.character(),
+                        entryprice = as.numeric(),
+                        exittime = as.character(),
+                        exitprice = as.numeric(),
+                        mtm = as.numeric(),
+                        mv = as.numeric(),
+                        month = as.numeric(),
+                        profit = as.numeric(),
+                        stringsAsFactors = FALSE
+                )
+        } else{
+                load(paste("Portfolio_",
+                           args[2],
+                           ".Rdata",
+                           sep = ""))
+        }
+        
+        StartingDate = as.Date(kBackTestStartDate)
+        if (nrow(Portfolio) > 0) {
+                for (row in 1:nrow(Portfolio)) {
+                        if (!is.na(Portfolio[row, 'exittime'])) {
+                                tempDate = as.Date(Portfolio[row, 'entrytime'])
+                                StartingDate = ifelse(tempDate > StartingDate,
+                                                      tempDate,
+                                                      StartingDate)
+                        } else{
+                                tempDate = as.Date(Portfolio[row, 'entrytime'])
+                                StartingDate = ifelse(tempDate > StartingDate,
+                                                      tempDate,
+                                                      StartingDate)
+                        }
+                }
+                StartingDate = adjust.next(as.Date(StartingDate) + 1,
+                                           "india")
+        }
+        
+        
+        StartingIndex = which(StatementDate == StartingDate)
+        # Adjust portfolio  for any splits
+        #update splits
+        if (nrow(Portfolio) > 0) {
+                redisConnect()
+                redisSelect(2)
+                a <-
+                        unlist(redisSMembers("splits")) # get values from redis in a vector
+                tmp <-
+                        (strsplit(a, split = "_")) # convert vector to list
+                k <-
+                        lengths(tmp) # expansion size for each list element
+                allvalues <-
+                        unlist(tmp) # convert list to vector
+                splits <-
+                        data.frame(
+                                date = 1:length(a),
+                                symbol = 1:length(a),
+                                oldshares = 1:length(a),
+                                newshares = 1:length(a),
+                                reason = rep("", length(a)),
+                                stringsAsFactors = FALSE
+                        )
+                for (i in 1:length(a)) {
+                        for (j in 1:k[i]) {
+                                runsum = cumsum(k)[i]
+                                splits[i, j] <-
+                                        allvalues[runsum - k[i] + j]
+                        }
+                }
+                splits$date = as.POSIXct(splits$date,
+                                         format = "%Y%m%d",
+                                         tz = "Asia/Kolkata")
+                splits$oldshares <-
+                        as.numeric(splits$oldshares)
+                splits$newshares <-
+                        as.numeric(splits$newshares)
+        }
+        #for (d in StartingIndex:34) {
+        for (d in StartingIndex:length(StatementDate)) {
+                date = StatementDate[d]
+                Portfolio=updatePortfolioSplits(Portfolio,splits)
+                if (length(grep("S(at|un)",
+                                weekdays(date, abbr = TRUE))) == 0) {
+                        print(paste("Processing date:",
+                                    date,
+                                    sep = ""))
+                        #weekday
+                        out = CalculateNPV(Portfolio,
+                                           date,
+                                           kNiftyDataFolder)
+                        npv = out[[1]]
+                        Portfolio = out[[2]]
+                        RealizedProfit[d] = out[[3]]
+                        UnRealizedProfit[d] = out[[4]]
+                        ActualPortfolioValue[d] = npv
+                        Gap[d] = TargetPortfolioValue[d] - npv
+                        CurrentMonth = MonthsElapsed[d]
+                        
+                        # Sell Portfolio
+                        if (nrow(Portfolio) > 0) {
+                                for (p in 1:nrow(Portfolio)) {
+                                        DaysSincePurchase = as.numeric(date - as.Date(Portfolio[p, 'entrytime']))
+                                        if (is.na(Portfolio[p, 'exittime']) &&
+                                            DaysSincePurchase > kExitDays) {
+                                                symbol = Portfolio[p, 'symbol']
+                                                load(
                                                         paste(
-                                                                "Processing date:",
-                                                                date,
+                                                                kNiftyDataFolder,
+                                                                symbol,
+                                                                ".Rdata",
                                                                 sep = ""
                                                         )
                                                 )
-                                                #weekday
-                                                out = CalculateNPV(
-                                                        Portfolio,
-                                                        date,
-                                                        kNiftyDataFolder
+                                                OverBought = runSum(RSI(
+                                                        md$asettle,
+                                                        2
+                                                ) > kRSIExit,
+                                                2) == 2
+                                                enddate = which(
+                                                        as.Date(
+                                                                md$date,
+                                                                tz = "Asia/Kolkata"
+                                                        ) == date
                                                 )
-                                                npv = out[[1]]
-                                                Portfolio = out[[2]]
-                                                RealizedProfit[d] = out[[3]]
-                                                UnRealizedProfit[d] = out[[4]]
-                                                ActualPortfolioValue[d] = npv
-                                                Gap[d] = TargetPortfolioValue[d] - npv
-                                                CurrentMonth = MonthsElapsed[d]
-                                                
-                                                # Sell Portfolio
-                                                if (nrow(Portfolio) > 0) {
-                                                        for (p in 1:nrow(Portfolio)) {
-                                                                DaysSincePurchase = as.numeric(
-                                                                        date - as.Date(
-                                                                                Portfolio[p, 'entrytime']
-                                                                        )
-                                                                )
-                                                                if (is.na(Portfolio[p, 'exittime']) &&
-                                                                    DaysSincePurchase > kExitDays) {
-                                                                        symbol = Portfolio[p, 'symbol']
-                                                                        load(
-                                                                                paste(
-                                                                                        kNiftyDataFolder,
-                                                                                        symbol,
-                                                                                        ".Rdata",
-                                                                                        sep = ""
-                                                                                )
-                                                                        )
-                                                                        OverBought = runSum(
-                                                                                RSI(
-                                                                                        md$asettle,
-                                                                                        2
-                                                                                ) > kRSIExit,
-                                                                                2
-                                                                        ) == 2
-                                                                        enddate = which(
-                                                                                as.Date(
-                                                                                        md$date,
-                                                                                        tz = "Asia/Kolkata"
-                                                                                ) == date
-                                                                        )
-                                                                        if ((
-                                                                                length(
-                                                                                        enddate
-                                                                                ) > 0 &&
-                                                                                OverBought[enddate] == TRUE
-                                                                        ) ||
-                                                                        (
-                                                                                length(
-                                                                                        enddate
-                                                                                ) > 0 &&
-                                                                                as.Date(
-                                                                                        md$date[enddate]
-                                                                                ) >= as.Date(
-                                                                                        kBackTestCloseAllDate
-                                                                                )
-                                                                        )) {
-                                                                                print(
-                                                                                        paste(
-                                                                                                "exit d:",
-                                                                                                d,
-                                                                                                sep = ""
-                                                                                        )
-                                                                                )
-                                                                                origposition <-
-                                                                                        GetCurrentPosition(
-                                                                                                symbol,
-                                                                                                Portfolio,
-                                                                                                path = kNiftyDataFolder,
-                                                                                                position.on = date
-                                                                                        )
-                                                                                Portfolio[p, 'exittime'] = as.character(
-                                                                                        date
-                                                                                )
-                                                                                Portfolio[p, 'exitprice'] = md$settle[enddate]
-                                                                                if (kWriteToRedis) {
-                                                                                        redisConnect(
-                                                                                                
-                                                                                        )
-                                                                                        redisSelect(
-                                                                                                kRedisDatabase
-                                                                                        )
-                                                                                        buyindex = which(
-                                                                                                as.Date(
-                                                                                                        md$date,
-                                                                                                        tz = "Asia/Kolkata"
-                                                                                                ) == Portfolio[p, 'entrytime']
-                                                                                        )
-                                                                                        sellindex = which(
-                                                                                                as.Date(
-                                                                                                        md$date,
-                                                                                                        tz = "Asia/Kolkata"
-                                                                                                ) == date
-                                                                                        )
-                                                                                        size = Portfolio[p, 'size'] *
-                                                                                                md$splitadjust[buyindex] / md$splitadjust[sellindex]
-                                                                                        size = floor(
-                                                                                                size
-                                                                                        )
-                                                                                        longname = paste(
-                                                                                                symbol,
-                                                                                                "_STK___",
-                                                                                                sep = ""
-                                                                                        )
-                                                                                        if (size > 0) {
-                                                                                                redisRPush(
-                                                                                                        paste(
-                                                                                                                "trades",
-                                                                                                                kStrategy,
-                                                                                                                sep = ":"
-                                                                                                        ),
-                                                                                                        charToRaw(
-                                                                                                                paste(
-                                                                                                                        longname,
-                                                                                                                        size,
-                                                                                                                        "SELL",
-                                                                                                                        0,
-                                                                                                                        origposition,
-                                                                                                                        sep = ":"
-                                                                                                                )
-                                                                                                        )
-                                                                                                )
-                                                                                        }
-                                                                                        
-                                                                                        levellog(
-                                                                                                logger,
-                                                                                                "INFO",
-                                                                                                paste(
-                                                                                                        longname,
-                                                                                                        size,
-                                                                                                        "SELL",
-                                                                                                        0,
-                                                                                                        position,
-                                                                                                        sep = ":"
-                                                                                                )
-                                                                                        )
-                                                                                        redisClose(
-                                                                                                
-                                                                                        )
-                                                                                }
-                                                                        }
-                                                                }
-                                                        }
-                                                }
-                                                
-                                                #Now Scan for Buys
-                                                if (nrow(Portfolio) > 0) {
-                                                        DistinctPurchasesThisMonth = length(unique(
-                                                                Portfolio[Portfolio$month == CurrentMonth, c("symbol")]
-                                                        ))
-                                                } else{
-                                                        DistinctPurchasesThisMonth = 0
-                                                }
-                                                #print(paste("Processing Buy. Gap:", Gap,",MinOrderValue:",MinOrderValue,",DistinctPurchasesThisMonth:",DistinctPurchasesThisMonth, ",date:",date,sep = ""))
-                                                if (Gap[d] > kMinOrderValue &&
-                                                    DistinctPurchasesThisMonth < kTradesPerMonth &&
-                                                    date < as.Date(kBackTestEndDate)) {
-                                                        load(GetDF4FileName(
-                                                                date
-                                                        ))
-                                                        df4 = df4[df4$UPSIDE > (kUpside - 50),] # get a smaller list of df4 that has a positive upside
-                                                        df4 <-
-                                                                UpdateDF4Upside(
-                                                                        df4,
-                                                                        as.character(
-                                                                                date
-                                                                        ),
-                                                                        kNiftyDataFolder
-                                                                )
-                                                        if (!kRequireOverSold) {
-                                                                df4$OverSold = TRUE
-                                                        }
-                                                        # print(paste("Processing Buy for d2:", d,",date:",date, sep = ""))
-                                                        shortlist <-
-                                                                df4[df4$UPSIDE > kUpside &
-                                                                            #df4$SplitOverLastYear==1 &
-                                                                            df4$DIVIDENDPAYOUTPERC > kThresholdDividedPayoutPercent &
-                                                                            df4$OverSold == TRUE &
-                                                                            df4$ROCE > kThresholdROCE &
-                                                                            df4$AnnualizedSlope > kSlope /
-                                                                            100  &
-                                                                            df4$r > kR2Fit / 100 &
-                                                                            df4$CurrentRSI < kRSIEntry &
-                                                                            df4$FINDATE + 90 < date &
-                                                                            df4$MCAP > kMinMarketCap , ]
-                                                        
-                                                        #df4$FINDATE+90 < date covers scenarios where the FINANCIALS are forward looking
-                                                        existingSymbols <-
-                                                                unique(Portfolio[Portfolio$month == CurrentMonth, c("symbol")])
-                                                        dupes = match(
-                                                                existingSymbols,
-                                                                shortlist$TICKER
+                                                if ((
+                                                        length(enddate) > 0 &&
+                                                        OverBought[enddate] == TRUE
+                                                ) ||
+                                                (
+                                                        length(enddate) > 0 &&
+                                                        as.Date(md$date[enddate]) >= as.Date(
+                                                                kBackTestCloseAllDate
                                                         )
-                                                        dupes <-
-                                                                dupes[!is.na(dupes)]
-                                                        if (length(dupes > 0)) {
-                                                                shortlist <- shortlist[-dupes, ]
-                                                        }
-                                                        if (DistinctPurchasesThisMonth < kTradesPerMonth &&
-                                                            nrow(shortlist) > kTradesPerMonth - DistinctPurchasesThisMonth) {
-                                                                shortlist <-
-                                                                        shortlist[1:(
-                                                                                kTradesPerMonth - DistinctPurchasesThisMonth
-                                                                        ), ]
-                                                        }
-                                                        
-                                                        if (nrow(shortlist) > 0 &&
-                                                            DistinctPurchasesThisMonth < kTradesPerMonth) {
-                                                                InvestmentValue = Gap[d] / (
-                                                                        kTradesPerMonth - DistinctPurchasesThisMonth
+                                                )) {
+                                                        print(
+                                                                paste(
+                                                                        "exit d:",
+                                                                        d,
+                                                                        sep = ""
                                                                 )
-                                                                # write to redis
-                                                                if (kWriteToRedis) {
-                                                                        redisConnect()
-                                                                        redisSelect(
-                                                                                kRedisDatabase
-                                                                        )
-                                                                        for (row in 1:nrow(
-                                                                                shortlist
-                                                                        )) {
-                                                                                scrip = shortlist[row, 'TICKER']
-                                                                                load(
+                                                        )
+                                                        origposition <-
+                                                                GetCurrentPosition(
+                                                                        symbol,
+                                                                        Portfolio,
+                                                                        path = kNiftyDataFolder,
+                                                                        position.on = date
+                                                                )
+                                                        Portfolio[p, 'exittime'] = as.character(date)
+                                                        Portfolio[p, 'exitprice'] = md$settle[enddate]
+                                                        if (kWriteToRedis) {
+                                                                redisConnect()
+                                                                redisSelect(kRedisDatabase)
+                                                                buyindex = which(
+                                                                        as.Date(
+                                                                                md$date,
+                                                                                tz = "Asia/Kolkata"
+                                                                        ) == Portfolio[p, 'entrytime']
+                                                                )
+                                                                sellindex = which(
+                                                                        as.Date(
+                                                                                md$date,
+                                                                                tz = "Asia/Kolkata"
+                                                                        ) == date
+                                                                )
+                                                                size = Portfolio[p, 'size'] *
+                                                                        md$splitadjust[buyindex] / md$splitadjust[sellindex]
+                                                                size = floor(size)
+                                                                longname = paste(
+                                                                        symbol,
+                                                                        "_STK___",
+                                                                        sep = ""
+                                                                )
+                                                                if (size > 0) {
+                                                                        redisRPush(
+                                                                                paste(
+                                                                                        "trades",
+                                                                                        kStrategy,
+                                                                                        sep = ":"
+                                                                                ),
+                                                                                charToRaw(
                                                                                         paste(
-                                                                                                kNiftyDataFolder,
-                                                                                                scrip,
-                                                                                                ".Rdata",
-                                                                                                sep = ""
+                                                                                                longname,
+                                                                                                size,
+                                                                                                "SELL",
+                                                                                                0,
+                                                                                                origposition,
+                                                                                                sep = ":"
                                                                                         )
                                                                                 )
-                                                                                price = md[as.Date(
-                                                                                        md$date,
-                                                                                        tz = "Asia/Kolkata"
-                                                                                ) == date, 'settle']
-                                                                                size = as.integer(
-                                                                                        InvestmentValue / price
-                                                                                )
-                                                                                longname = paste(
-                                                                                        scrip,
-                                                                                        "_STK___",
-                                                                                        sep = ""
-                                                                                )
-                                                                                if (size > 0) {
-                                                                                        position = GetCurrentPosition(
-                                                                                                scrip,
-                                                                                                Portfolio,
-                                                                                                path = kNiftyDataFolder,
-                                                                                                position.on = date
-                                                                                        )
-                                                                                        #position = GetCurrentPosition(scrip, Portfolio)
-                                                                                        redisRPush(
-                                                                                                paste(
-                                                                                                        "trades",
-                                                                                                        kStrategy,
-                                                                                                        sep = ":"
-                                                                                                ),
-                                                                                                charToRaw(
-                                                                                                        paste(
-                                                                                                                longname,
-                                                                                                                size,
-                                                                                                                "BUY",
-                                                                                                                0,
-                                                                                                                position,
-                                                                                                                sep = ":"
-                                                                                                        )
-                                                                                                )
-                                                                                        )
-                                                                                }
-                                                                        }
-                                                                        levellog(
-                                                                                logger,
-                                                                                "INFO",
+                                                                        )
+                                                                }
+                                                                
+                                                                levellog(
+                                                                        logger,
+                                                                        "INFO",
+                                                                        paste(
+                                                                                longname,
+                                                                                size,
+                                                                                "SELL",
+                                                                                0,
+                                                                                position,
+                                                                                sep = ":"
+                                                                        )
+                                                                )
+                                                                redisClose()
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
+                        
+                        #Now Scan for Buys
+                        if (nrow(Portfolio) > 0) {
+                                DistinctPurchasesThisMonth = length(unique(Portfolio[Portfolio$month == CurrentMonth, c("symbol")]))
+                        } else{
+                                DistinctPurchasesThisMonth = 0
+                        }
+                        #print(paste("Processing Buy. Gap:", Gap,",MinOrderValue:",MinOrderValue,",DistinctPurchasesThisMonth:",DistinctPurchasesThisMonth, ",date:",date,sep = ""))
+                        if (Gap[d] > kMinOrderValue &&
+                            DistinctPurchasesThisMonth < kTradesPerMonth &&
+                            date < as.Date(kBackTestEndDate)) {
+                                load(GetDF4FileName(date))
+                                df4 = df4[df4$UPSIDE > (kUpside - 50), ] # get a smaller list of df4 that has a positive upside
+                                df4 <-
+                                        UpdateDF4Upside(df4,
+                                                        as.character(date),
+                                                        kNiftyDataFolder)
+                                if (!kRequireOverSold) {
+                                        df4$OverSold = TRUE
+                                }
+                                # print(paste("Processing Buy for d2:", d,",date:",date, sep = ""))
+                                shortlist <-
+                                        df4[df4$UPSIDE > kUpside &
+                                                    #df4$SplitOverLastYear==1 &
+                                                    df4$DIVIDENDPAYOUTPERC > kThresholdDividedPayoutPercent &
+                                                    df4$OverSold == TRUE &
+                                                    df4$ROCE > kThresholdROCE &
+                                                    df4$AnnualizedSlope > kSlope /
+                                                    100  &
+                                                    df4$r > kR2Fit / 100 &
+                                                    df4$CurrentRSI < kRSIEntry &
+                                                    df4$FINDATE + 90 < date &
+                                                    df4$MCAP > kMinMarketCap ,]
+                                
+                                #df4$FINDATE+90 < date covers scenarios where the FINANCIALS are forward looking
+                                existingSymbols <-
+                                        unique(Portfolio[Portfolio$month == CurrentMonth, c("symbol")])
+                                dupes = match(existingSymbols,
+                                              shortlist$TICKER)
+                                dupes <-
+                                        dupes[!is.na(dupes)]
+                                if (length(dupes > 0)) {
+                                        shortlist <- shortlist[-dupes,]
+                                }
+                                if (DistinctPurchasesThisMonth < kTradesPerMonth &&
+                                    nrow(shortlist) > kTradesPerMonth - DistinctPurchasesThisMonth) {
+                                        shortlist <-
+                                                shortlist[1:(
+                                                        kTradesPerMonth - DistinctPurchasesThisMonth
+                                                ),]
+                                }
+                                
+                                if (nrow(shortlist) > 0 &&
+                                    DistinctPurchasesThisMonth < kTradesPerMonth) {
+                                        InvestmentValue = Gap[d] / (
+                                                kTradesPerMonth - DistinctPurchasesThisMonth
+                                        )
+                                        # write to redis
+                                        if (kWriteToRedis) {
+                                                redisConnect()
+                                                redisSelect(kRedisDatabase)
+                                                for (row in 1:nrow(shortlist)) {
+                                                        scrip = shortlist[row, 'TICKER']
+                                                        load(
+                                                                paste(
+                                                                        kNiftyDataFolder,
+                                                                        scrip,
+                                                                        ".Rdata",
+                                                                        sep = ""
+                                                                )
+                                                        )
+                                                        price = md[as.Date(md$date,
+                                                                           tz = "Asia/Kolkata") == date, 'settle']
+                                                        size = as.integer(InvestmentValue / price)
+                                                        longname = paste(scrip,
+                                                                         "_STK___",
+                                                                         sep = "")
+                                                        if (size > 0) {
+                                                                position = GetCurrentPosition(
+                                                                        scrip,
+                                                                        Portfolio,
+                                                                        path = kNiftyDataFolder,
+                                                                        position.on = date
+                                                                )
+                                                                #position = GetCurrentPosition(scrip, Portfolio)
+                                                                redisRPush(
+                                                                        paste(
+                                                                                "trades",
+                                                                                kStrategy,
+                                                                                sep = ":"
+                                                                        ),
+                                                                        charToRaw(
                                                                                 paste(
                                                                                         longname,
                                                                                         size,
@@ -897,430 +852,426 @@ for (kThresholdROCE in c(15,20)) {
                                                                                         sep = ":"
                                                                                 )
                                                                         )
-                                                                        redisClose()
-                                                                }
-                                                                # update portfolio
-                                                                print(
-                                                                        paste(
-                                                                                "entry d:",
-                                                                                d,
-                                                                                "InvestmentValue:",
-                                                                                InvestmentValue,
-                                                                                sep = ""
-                                                                        )
                                                                 )
-                                                                Portfolio <-
-                                                                        UpdatePortfolioBuy(
-                                                                                Portfolio,
-                                                                                shortlist,
-                                                                                date,
-                                                                                InvestmentValue,
-                                                                                CurrentMonth,
-                                                                                kNiftyDataFolder
-                                                                        )
                                                         }
                                                 }
-                                                
-                                                
-                                        }
-                                }
-                                
-                                #Cleanup values before reporting
-                                out = CalculateNPV(Portfolio,
-                                                   date,
-                                                   kNiftyDataFolder)
-                                npv = out[[1]]
-                                Portfolio = out[[2]]
-                                RealizedProfit[d] = out[[3]]
-                                UnRealizedProfit[d] = out[[4]]
-                                
-                                #stopCluster(cl)
-                                UnRealizedProfit <-
-                                        na.locf(UnRealizedProfit, na.rm = FALSE)
-                                UnRealizedProfit <-
-                                        na.locf(UnRealizedProfit, fromLast = TRUE)
-                                
-                                RealizedProfit <-
-                                        na.locf(RealizedProfit, na.rm = FALSE)
-                                RealizedProfit <-
-                                        na.locf(RealizedProfit, fromLast  = TRUE)
-                                
-                                Gap <- na.locf(Gap, na.rm = FALSE)
-                                Gap <- na.locf(Gap, fromLast = TRUE)
-                                
-                                maxdddate = which(
-                                        RealizedProfit + UnRealizedProfit == min(
-                                                RealizedProfit +
-                                                        UnRealizedProfit
-                                        )
-                                )
-                                irr<-0
-                                cashflow <-
-                                        CashFlow(Portfolio,
-                                                 StatementDate,
-                                                 kBrokerage)
-                                cashflow[length(cashflow)] <-
-                                        cashflow[length(cashflow)] + npv
-                                if (sum(cashflow) > 0) {
-                                        irr <- xirr(cashflow,
-                                                    StatementDate) * 100
-                                        print(paste("xirr:", irr, sep = ""))
-                                        
-                                } else{
-                                        irr = 0
-                                }
-                                
-                                naindices = which(is.na(Portfolio$mtm))
-                                if (length(naindices) > 0) {
-                                        Portfolio[naindices,]$mtm <- Portfolio[naindices,]$entryprice
-                                        Portfolio[naindices,]$profit <- 0
-                                }
-                                Portfolio$exitprice <-
-                                        ifelse(
-                                                is.na(Portfolio$exittime),
-                                                Portfolio$mtm,
-                                                Portfolio$exitprice
-                                        )
-                                
-                                for (p in 1:nrow(Portfolio)) {
-                                        load(
-                                                paste(
-                                                        kNiftyDataFolder,
-                                                        Portfolio[p, 'symbol'],
-                                                        ".Rdata",
-                                                        sep = ""
-                                                )
-                                        )
-                                        buyindex = which(
-                                                as.Date(md$date, tz = "Asia/Kolkata") == Portfolio[p, 'entrytime']
-                                        )
-                                        sellindex = ifelse(
-                                                is.na(
-                                                        Portfolio$exittime[p]
-                                                ),
-                                                nrow(md),
-                                                which(
-                                                        as.Date(md$date, tz = "Asia/Kolkata") == Portfolio[p, 'exittime']
-                                                )
-                                        )
-                                        splitadjust = md$splitadjust[buyindex] / md$splitadjust[sellindex]
-                                        Portfolio$profit[p] = Portfolio$size[p] * (
-                                                splitadjust * Portfolio$exitprice[p] - Portfolio$entryprice[p]
-                                        ) - kBrokerage * Portfolio$size[p] * (
-                                                Portfolio$exitprice[p] * splitadjust + Portfolio$entryprice[p]
-                                        )
-                                }
-                                
-                                
-                                
-                                if (args[1] == 1) {
-                                        save(
-                                                Portfolio,
-                                                file = paste(
-                                                        "Portfolio_",
-                                                        args[2],
-                                                        ".Rdata",
-                                                        sep = ""
-                                                )
-                                        )
-                                }
-                                
-                                if (args[1] == 2) {
-                                        # BackTest
-                                        winratio <-
-                                                sum((
-                                                        ifelse(
-                                                                is.na(Portfolio$mtm),
-                                                                Portfolio$entryprice,
-                                                                Portfolio$mtm
-                                                        ) - Portfolio$entryprice
-                                                ) >= 0) / nrow(Portfolio)
-                                        profit = sum(Portfolio$profit[complete.cases(Portfolio$profit)])
-                                        
-                                        Summary <-
-                                                rbind(
-                                                        Summary,
-                                                        data.frame(
-                                                                irr = irr,
-                                                                winratio = winratio,
-                                                                profit = profit
+                                                levellog(
+                                                        logger,
+                                                        "INFO",
+                                                        paste(
+                                                                longname,
+                                                                size,
+                                                                "BUY",
+                                                                0,
+                                                                position,
+                                                                sep = ":"
                                                         )
                                                 )
-                                        
-                                        ActualPortfolioValue <-
-                                                ifelse(
-                                                        ActualPortfolioValue == 0,
-                                                        NA_real_,
-                                                        ActualPortfolioValue
+                                                redisClose()
+                                        }
+                                        # update portfolio
+                                        print(
+                                                paste(
+                                                        "entry d:",
+                                                        d,
+                                                        "InvestmentValue:",
+                                                        InvestmentValue,
+                                                        sep = ""
                                                 )
-                                        ActualPortfolioValue <-
-                                                na.locf(ActualPortfolioValue,
-                                                        na.rm = FALSE)
-                                        ActualPortfolioValue <-
-                                                ifelse(
-                                                        is.na(
-                                                                ActualPortfolioValue
-                                                        ),
-                                                        0,
-                                                        ActualPortfolioValue
-                                                )
-                                        pnl <-
-                                                data.frame(
-                                                        bizdays = as.Date(StatementDate, tz = kTimeZone),
-                                                        realized = 0,
-                                                        unrealized = 0,
-                                                        brokerage = 0
-                                                )
-                                        cumpnl <-
-                                                CalculateDailyPNL(
+                                        )
+                                        Portfolio <-
+                                                UpdatePortfolioBuy(
                                                         Portfolio,
-                                                        pnl,
-                                                        kNiftyDataFolder,
-                                                        kBrokerage,
-                                                        per.contract.brokerage = FALSE,
-                                                        deriv = FALSE
+                                                        shortlist,
+                                                        date,
+                                                        InvestmentValue,
+                                                        CurrentMonth,
+                                                        kNiftyDataFolder
                                                 )
-                                        DailyPNL <-
-                                                cumpnl$realized + cumpnl$unrealized - cumpnl$brokerage
-                                        workingdays <-
-                                                which(DailyPNL != Ref(DailyPNL,-1))
-                                        DailyPNLWorking <-
-                                                DailyPNL[workingdays] - Ref(DailyPNL[workingdays],-1)
-                                        DailyPNLWorking <-
-                                                ifelse(
-                                                        is.na(DailyPNLWorking),
-                                                        0,
-                                                        DailyPNLWorking
-                                                )
-                                        StatementDateWorking <-
-                                                StatementDate[workingdays]
-                                        DailyReturnWorking <-
-                                                ifelse(
-                                                        ActualPortfolioValue[workingdays] == 0,
-                                                        0,
-                                                        DailyPNLWorking / ActualPortfolioValue[workingdays]
-                                                )
-                                        sharpe <- sharpe(DailyReturnWorking)
-                                        
-                                        my.range <-
-                                                range(ActualPortfolioValue)
-                                        plot(
-                                                x = StatementDate,
-                                                y = ActualPortfolioValue,
-                                                type = 'l',
-                                                main = "Portfolio Buildup",
-                                                ylab = "INR",
-                                                xlab = "Date",
-                                                axes = FALSE,
-                                                ylim = my.range,
-                                                lty = 1
-                                        )
-                                        my.legend.size <-
-                                                legend(
-                                                        "topright",
-                                                        c(
-                                                                "Actual Portfolio Value",
-                                                                "Target Portfolio Value",
-                                                                "Gap"
-                                                        ),
-                                                        plot = FALSE
-                                                )
-                                        my.range[2] <-
-                                                1.04 * (my.range[2] + my.legend.size$rect$h)
-                                        axis.Date(
-                                                1,
-                                                StatementDate,
-                                                at = seq(
-                                                        min(StatementDate),
-                                                        max(StatementDate) + 90,
-                                                        by = "3 mon"
-                                                ),
-                                                ,
-                                                format = "%m-%Y"
-                                        )
-                                        axis(
-                                                2,
-                                                at = seq(
-                                                        -5000000,
-                                                        50000000,
-                                                        5000000
-                                                ),
-                                                labels = paste(
-                                                        seq(-5, 50, 5),
-                                                        "M",
-                                                        sep = ""
-                                                ),
-                                                las = 1
-                                        )
-                                        lines(
-                                                x = StatementDate,
-                                                y = TargetPortfolioValue,
-                                                ylab = "",
-                                                xlab = "",
-                                                lty = 2
-                                        )
-                                        lines(
-                                                x = StatementDate,
-                                                y = (
-                                                        TargetPortfolioValue - ActualPortfolioValue
-                                                ),
-                                                ,
-                                                xlab = "",
-                                                ylab = "",
-                                                lty = 3
-                                        )
-                                        legend(
-                                                "topleft",
-                                                lty = c(1, 2, 3),
-                                                legend = c(
-                                                        "Actual Portfolio Value",
-                                                        "Target Portfolio Value",
-                                                        "Gap"
-                                                ),
-                                                cex = 0.85,
-                                                bty = "n",
-                                                xjust = 1
-                                        )
-                                        
-                                        # Profit and Loss Graph
-                                        plot(
-                                                x = StatementDate,
-                                                y = (
-                                                        cumpnl$realized + cumpnl$unrealized
-                                                ),
-                                                type = 'l',
-                                                main = "Profit & Loss",
-                                                xlab = "Date",
-                                                ylab = "Profit",
-                                                axes = FALSE
-                                        )
-                                        axis.Date(
-                                                1,
-                                                StatementDate,
-                                                at = seq(
-                                                        min(StatementDate),
-                                                        max(StatementDate) + 90,
-                                                        by = "3 mon"
-                                                ),
-                                                ,
-                                                format = "%m-%Y"
-                                        )
-                                        minProfit = min(cumpnl$realized + cumpnl$unrealized)
-                                        maxProfit = max(cumpnl$realized + cumpnl$unrealized)
-                                        points = pretty(seq(
-                                                minProfit,
-                                                maxProfit,
-                                                by = (
-                                                        maxProfit - minProfit
-                                                ) / 5
-                                        ))
-                                        axis(
-                                                2,
-                                                at = points,
-                                                labels = paste(
-                                                        points / 1000000,
-                                                        "M",
-                                                        sep = ""
-                                                ),
-                                                las = 1
-                                        )
-                                        
-                                        # DailyReturn
-                                        plot(
-                                                x = StatementDateWorking,
-                                                y = DailyReturnWorking,
-                                                type = 'l',
-                                                main = "DailyReturn",
-                                                xlab = "Date",
-                                                ylab = "Return",
-                                                axes = FALSE
-                                        )
-                                        axis.Date(
-                                                1,
-                                                StatementDate,
-                                                at = seq(
-                                                        min(
-                                                                StatementDateWorking
-                                                        ),
-                                                        max(
-                                                                StatementDateWorking
-                                                        ) + 90,
-                                                        by = "3 mon"
-                                                ),
-                                                ,
-                                                format = "%m-%Y"
-                                        )
-                                        minProfit = min(DailyReturnWorking)
-                                        maxProfit = max(DailyReturnWorking)
-                                        points = pretty(seq(
-                                                minProfit,
-                                                maxProfit,
-                                                by = (
-                                                        maxProfit - minProfit
-                                                ) / 5
-                                        ))
-                                        axis(
-                                                2,
-                                                at = points,
-                                                labels = paste(
-                                                        points * 100,
-                                                        "%",
-                                                        sep = ""
-                                                ),
-                                                las = 1
-                                        )
-                                        
-                                        #Cash Buildup
-                                        plot(
-                                                x = StatementDate,
-                                                y = ifelse(
-                                                        cumsum(cashflow) < 0,
-                                                        cumsum(cashflow),
-                                                        0
-                                                ),
-                                                type = 'l',
-                                                main = "Deployed Cash",
-                                                xlab = "Date",
-                                                ylab = "Deployed Cash",
-                                                axes = FALSE
-                                        )
-                                        axis.Date(
-                                                1,
-                                                StatementDate,
-                                                at = seq(
-                                                        min(StatementDate),
-                                                        max(StatementDate) + 90,
-                                                        by = "3 mon"
-                                                ),
-                                                ,
-                                                format = "%m-%Y"
-                                        )
-                                        minProfit = min(cumsum(cashflow))
-                                        maxProfit = 0
-                                        points = pretty(seq(
-                                                minProfit,
-                                                maxProfit,
-                                                by = (
-                                                        maxProfit - minProfit
-                                                ) / 5
-                                        ))
-                                        axis(
-                                                2,
-                                                at = points,
-                                                labels = paste(
-                                                        points / 1000000,
-                                                        "M",
-                                                        sep = ""
-                                                ),
-                                                las = 1
-                                        )
                                 }
-                                line=paste(kThresholdROCE,kR2Fit,kRSIEntry,kRSIExit,kRequireOverSold,sum(Portfolio$profit),winratio,irr,nrow(Portfolio), sep=",")
-                                levellog(logger,"INFO",line)
-                                write(line,file="summary.txt",append=TRUE)
-                                sink()
-                                flush.console()
+                        }
+                        
+                        
+                }
+        }
+        
+        #Cleanup values before reporting
+        out = CalculateNPV(Portfolio,
+                           date,
+                           kNiftyDataFolder)
+        npv = out[[1]]
+        Portfolio = out[[2]]
+        RealizedProfit[d] = out[[3]]
+        UnRealizedProfit[d] = out[[4]]
+        
+        #stopCluster(cl)
+        UnRealizedProfit <-
+                na.locf(UnRealizedProfit, na.rm = FALSE)
+        UnRealizedProfit <-
+                na.locf(UnRealizedProfit, fromLast = TRUE)
+        
+        RealizedProfit <-
+                na.locf(RealizedProfit, na.rm = FALSE)
+        RealizedProfit <-
+                na.locf(RealizedProfit, fromLast  = TRUE)
+        
+        Gap <- na.locf(Gap, na.rm = FALSE)
+        Gap <- na.locf(Gap, fromLast = TRUE)
+        
+        maxdddate = which(RealizedProfit + UnRealizedProfit == min(RealizedProfit +
+                                                                           UnRealizedProfit))
+        irr <- 0
+        cashflow <-
+                CashFlow(Portfolio,
+                         StatementDate,
+                         kBrokerage)
+        cashflow[length(cashflow)] <-
+                cashflow[length(cashflow)] + npv
+        if (sum(cashflow) > 0) {
+                irr <- xirr(cashflow,
+                            StatementDate) * 100
+                print(paste("xirr:", irr, sep = ""))
+                
+        } else{
+                irr = 0
+        }
+        
+        naindices = which(is.na(Portfolio$mtm))
+        if (length(naindices) > 0) {
+                Portfolio[naindices, ]$mtm <- Portfolio[naindices, ]$entryprice
+                Portfolio[naindices, ]$profit <-
+                        0
+        }
+        Portfolio$exitprice <-
+                ifelse(is.na(Portfolio$exittime),
+                       Portfolio$mtm,
+                       Portfolio$exitprice)
+        
+        for (p in 1:nrow(Portfolio)) {
+                load(paste(kNiftyDataFolder,
+                           Portfolio[p, 'symbol'],
+                           ".Rdata",
+                           sep = ""))
+                buyindex = which(as.Date(md$date, tz = "Asia/Kolkata") == Portfolio[p, 'entrytime'])
+                sellindex = ifelse(
+                        is.na(Portfolio$exittime[p]),
+                        nrow(md),
+                        which(
+                                as.Date(md$date, tz = "Asia/Kolkata") == Portfolio[p, 'exittime']
+                        )
+                )
+                splitadjust = md$splitadjust[buyindex] / md$splitadjust[sellindex]
+                splitadjust = 1
+                Portfolio$profit[p] = Portfolio$size[p] * (splitadjust * Portfolio$exitprice[p] - Portfolio$entryprice[p]) - kBrokerage * Portfolio$size[p] * (Portfolio$exitprice[p] * splitadjust + Portfolio$entryprice[p])
+        }
+        
+        print(Portfolio)
+
+        if (args[1] == 1) {
+                save(Portfolio,
+                     file = paste("Portfolio_",
+                                  args[2],
+                                  ".Rdata",
+                                  sep = ""))
+        }
+        
+        if (args[1] == 2) {
+                # BackTest
+                winratio <-
+                        sum((
+                                ifelse(
+                                        is.na(Portfolio$mtm),
+                                        Portfolio$entryprice,
+                                        Portfolio$mtm
+                                ) - Portfolio$entryprice
+                        ) >= 0) / nrow(Portfolio)
+                profit = sum(Portfolio$profit[complete.cases(Portfolio$profit)])
+                
+                Summary <-
+                        rbind(Summary,
+                              data.frame(
+                                      irr = irr,
+                                      winratio = winratio,
+                                      profit = profit
+                              ))
+                
+                ActualPortfolioValue <-
+                        ifelse(ActualPortfolioValue == 0,
+                               NA_real_,
+                               ActualPortfolioValue)
+                ActualPortfolioValue <-
+                        na.locf(ActualPortfolioValue,
+                                na.rm = FALSE)
+                ActualPortfolioValue <-
+                        ifelse(is.na(ActualPortfolioValue),
+                               0,
+                               ActualPortfolioValue)
+                pnl <-
+                        data.frame(
+                                bizdays = as.Date(StatementDate, tz = kTimeZone),
+                                realized = 0,
+                                unrealized = 0,
+                                brokerage = 0
+                        )
+                cumpnl <-
+                        CalculateDailyPNL(
+                                Portfolio,
+                                pnl,
+                                kNiftyDataFolder,
+                                kBrokerage,
+                                per.contract.brokerage = FALSE,
+                                deriv = FALSE
+                        )
+                DailyPNL <-
+                        cumpnl$realized + cumpnl$unrealized - cumpnl$brokerage
+                workingdays <-
+                        which(DailyPNL != Ref(DailyPNL, -1))
+                DailyPNLWorking <-
+                        DailyPNL[workingdays] - Ref(DailyPNL[workingdays], -1)
+                DailyPNLWorking <-
+                        ifelse(is.na(DailyPNLWorking),
+                               0,
+                               DailyPNLWorking)
+                StatementDateWorking <-
+                        StatementDate[workingdays]
+                DailyReturnWorking <-
+                        ifelse(
+                                ActualPortfolioValue[workingdays] == 0,
+                                0,
+                                DailyPNLWorking / ActualPortfolioValue[workingdays]
+                        )
+                sharpe <-
+                        sharpe(DailyReturnWorking)
+                
+                my.range <-
+                        range(ActualPortfolioValue)
+                plot(
+                        x = StatementDate,
+                        y = ActualPortfolioValue,
+                        type = 'l',
+                        main = "Portfolio Buildup",
+                        ylab = "INR",
+                        xlab = "Date",
+                        axes = FALSE,
+                        ylim = my.range,
+                        lty = 1
+                )
+                my.legend.size <-
+                        legend(
+                                "topright",
+                                c(
+                                        "Actual Portfolio Value",
+                                        "Target Portfolio Value",
+                                        "Gap"
+                                ),
+                                plot = FALSE
+                        )
+                my.range[2] <-
+                        1.04 * (my.range[2] + my.legend.size$rect$h)
+                axis.Date(
+                        1,
+                        StatementDate,
+                        at = seq(
+                                min(StatementDate),
+                                max(StatementDate) + 90,
+                                by = "3 mon"
+                        ),
+                        ,
+                        format = "%m-%Y"
+                )
+                axis(
+                        2,
+                        at = seq(-5000000,
+                                 50000000,
+                                 5000000),
+                        labels = paste(seq(-5, 50, 5),
+                                       "M",
+                                       sep = ""),
+                        las = 1
+                )
+                lines(
+                        x = StatementDate,
+                        y = TargetPortfolioValue,
+                        ylab = "",
+                        xlab = "",
+                        lty = 2
+                )
+                lines(
+                        x = StatementDate,
+                        y = (TargetPortfolioValue - ActualPortfolioValue),
+                        ,
+                        xlab = "",
+                        ylab = "",
+                        lty = 3
+                )
+                legend(
+                        "topleft",
+                        lty = c(1, 2, 3),
+                        legend = c(
+                                "Actual Portfolio Value",
+                                "Target Portfolio Value",
+                                "Gap"
+                        ),
+                        cex = 0.85,
+                        bty = "n",
+                        xjust = 1
+                )
+                
+                # Profit and Loss Graph
+                plot(
+                        x = StatementDate,
+                        y = (cumpnl$realized + cumpnl$unrealized),
+                        type = 'l',
+                        main = "Profit & Loss",
+                        xlab = "Date",
+                        ylab = "Profit",
+                        axes = FALSE
+                )
+                axis.Date(
+                        1,
+                        StatementDate,
+                        at = seq(
+                                min(StatementDate),
+                                max(StatementDate) + 90,
+                                by = "3 mon"
+                        ),
+                        ,
+                        format = "%m-%Y"
+                )
+                minProfit = min(cumpnl$realized + cumpnl$unrealized)
+                maxProfit = max(cumpnl$realized + cumpnl$unrealized)
+                points = pretty(seq(
+                        minProfit,
+                        maxProfit,
+                        by = (maxProfit - minProfit) / 5
+                ))
+                axis(
+                        2,
+                        at = points,
+                        labels = paste(points / 1000000,
+                                       "M",
+                                       sep = ""),
+                        las = 1
+                )
+                
+                # DailyReturn
+                plot(
+                        x = StatementDateWorking,
+                        y = DailyReturnWorking,
+                        type = 'l',
+                        main = "DailyReturn",
+                        xlab = "Date",
+                        ylab = "Return",
+                        axes = FALSE
+                )
+                axis.Date(
+                        1,
+                        StatementDate,
+                        at = seq(
+                                min(StatementDateWorking),
+                                max(StatementDateWorking) + 90,
+                                by = "3 mon"
+                        ),
+                        ,
+                        format = "%m-%Y"
+                )
+                minProfit = min(DailyReturnWorking)
+                maxProfit = max(DailyReturnWorking)
+                points = pretty(seq(
+                        minProfit,
+                        maxProfit,
+                        by = (maxProfit - minProfit) / 5
+                ))
+                axis(
+                        2,
+                        at = points,
+                        labels = paste(points * 100,
+                                       "%",
+                                       sep = ""),
+                        las = 1
+                )
+                
+                #Cash Buildup
+                plot(
+                        x = StatementDate,
+                        y = ifelse(cumsum(cashflow) < 0,
+                                   cumsum(cashflow),
+                                   0),
+                        type = 'l',
+                        main = "Deployed Cash",
+                        xlab = "Date",
+                        ylab = "Deployed Cash",
+                        axes = FALSE
+                )
+                axis.Date(
+                        1,
+                        StatementDate,
+                        at = seq(
+                                min(StatementDate),
+                                max(StatementDate) + 90,
+                                by = "3 mon"
+                        ),
+                        ,
+                        format = "%m-%Y"
+                )
+                minProfit = min(cumsum(cashflow))
+                maxProfit = 0
+                points = pretty(seq(
+                        minProfit,
+                        maxProfit,
+                        by = (maxProfit - minProfit) / 5
+                ))
+                axis(
+                        2,
+                        at = points,
+                        labels = paste(points / 1000000,
+                                       "M",
+                                       sep = ""),
+                        las = 1
+                )
+        
+        line = paste(
+                kThresholdROCE,
+                kR2Fit,
+                kRSIEntry,
+                kRSIExit,
+                kRequireOverSold,
+                sum(Portfolio$profit),
+                winratio,
+                irr,
+                nrow(Portfolio),
+                sep = ","
+        )
+        levellog(logger, "INFO", line)
+        write(line, file = "summary.txt", append =
+                      TRUE)
+        sink()
+        flush.console()
+        }
+}
+
+if (kSimulation) {
+        for (kThresholdROCE in c(15, 20)) {
+                for (kR2Fit in c(70, 80)) {
+                        for (rsi in c(1, 2)) {
+                                if (rsi == 1) {
+                                        kRSIEntry = 30
+                                        kRSIExit = 70
+                                } else{
+                                        kRSIEntry = 20
+                                        kRSIExit = 80
+                                }
+                                for (os in c(1, 2)) {
+                                        if (os == 1) {
+                                                kRequireOverSold = TRUE
+                                        } else{
+                                                kRequireOverSold = FALSE
+                                        }
+                                        smlco()
+                                }
                         }
                 }
         }
+}else{
+        smclo()
 }
