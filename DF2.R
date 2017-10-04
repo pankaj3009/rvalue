@@ -1,7 +1,7 @@
 #library(doParallel)
 library(XML)
 assign("last.warning", NULL, envir = baseenv())
-folder="20170630"
+folder="20160923"
 #setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
 setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
@@ -42,9 +42,8 @@ if (length(args) > 0)
 {
   finyear = args[1]
 
-
 } else{
-  finyear = "2017"
+  finyear = "2016"
 
 }
 

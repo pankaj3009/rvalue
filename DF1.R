@@ -1,6 +1,6 @@
 # Creating Dataframe with a given XML file with parsing completed
 library(XML)
-folder="20170630"
+folder="20160923"
 #setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
 setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 

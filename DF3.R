@@ -2,7 +2,7 @@
 
 library(XML);
 #folder="20160923"
-folder="20170630"
+folder="20170731"
 #setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
 setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
