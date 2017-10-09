@@ -283,7 +283,7 @@ UpdateDF4Upside <-
                 symbolchange$newsymbol = gsub("[^0-9A-Za-z/-]", "", symbolchange$newsymbol)
                 redisClose()
                 symbolchange <-
-                        symbolchange[symbolchange$date <= as.POSIXct(date, format = "%Y%m%d", tz =
+                        symbolchange[symbolchange$date <= as.POSIXct(settledate, format = "%Y%m%d", tz =
                                                                              "Asia/Kolkata"), ]
                 #update symbols with current symbol
                 matches <- match(df4$TICKER, symbolchange$key)
@@ -609,6 +609,7 @@ smclo <- function() {
                                         allvalues[runsum - k[i] + j]
                         }
                 }
+                print("break1")
                 splits$date = as.POSIXct(splits$date,
                                          format = "%Y%m%d",
                                          tz = "Asia/Kolkata")
