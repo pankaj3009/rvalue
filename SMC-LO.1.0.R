@@ -609,7 +609,6 @@ smclo <- function() {
                                         allvalues[runsum - k[i] + j]
                         }
                 }
-                print("break1")
                 splits$date = as.POSIXct(splits$date,
                                          format = "%Y%m%d",
                                          tz = "Asia/Kolkata")
@@ -742,7 +741,7 @@ smclo <- function() {
                                                                                 size,
                                                                                 "SELL",
                                                                                 0,
-                                                                                position,
+                                                                                origposition,
                                                                                 sep = ":"
                                                                         )
                                                                 )
