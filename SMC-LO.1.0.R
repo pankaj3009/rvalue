@@ -41,9 +41,10 @@ kCommittedCapital = as.numeric(static$CommittedCapital)
 kLogFile = static$LogFile
 kHolidayFile = static$HolidayFile
 kStrategy = args[2]
+kExclusionList=static$ExclusionList
 kRequireOverSold = as.logical(static$RequireOversold)
 kRedisDatabase = as.numeric(args[3])
-
+kExclusionList<-strsplit(kExclusionList[1],",")[[1]]
 kSimulation = FALSE
 
 logger <- create.logger()
@@ -795,6 +796,8 @@ smclo <- function() {
                                 if (length(dupes > 0)) {
                                         shortlist <- shortlist[-dupes,]
                                 }
+                                # remove symbols in exclusion list
+                                shortlist<-shortlist[!shortlist$TICKER %in% kExclusionList,]
                                 if (DistinctPurchasesThisMonth < kTradesPerMonth &&
                                     nrow(shortlist) > kTradesPerMonth - DistinctPurchasesThisMonth) {
                                         shortlist <-
