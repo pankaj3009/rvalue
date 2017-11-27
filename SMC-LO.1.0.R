@@ -174,6 +174,7 @@ CalculateNPV <- function(portfolio, date, path) {
                         name = portfolio[l, 'symbol']
                         if (is.na(portfolio[l, 'exittime'])) {
                                 load(paste(path, name, ".Rdata", sep = ""))
+                                md<-unique(md)
                                 price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, 'settle']
                                 #print(paste("Date:",as.character(date),sep=""))
                                 if (length(price) == 1) {
@@ -198,6 +199,7 @@ CalculateNPV <- function(portfolio, date, path) {
                                 }
                         } else{
                                 load(paste(path, name, ".Rdata", sep = ""))
+                                md<-unique(md)
                                 buyindex = which(as.Date(md$date, tz = "Asia/Kolkata") == portfolio[l, 'entrytime'])
                                 sellindex = which(as.Date(md$date, tz = "Asia/Kolkata") == portfolio[l, "exittime"])
                                 splitadjustment = md$splitadjust[buyindex] / md$splitadjust[sellindex]
@@ -303,6 +305,7 @@ UpdateDF4Upside <-
                                            symbol,
                                            ".Rdata",
                                            sep = ""))
+                                md<-unique(md)
                                 endlength = which(md$date == settledate)
                                 if (length(endlength) == 1 &&
                                     endlength > (WorkingDaysForSlope - 1)) {
@@ -380,6 +383,7 @@ UpdatePortfolioBuy <-
                         for (s in 1:nrow(shortlist)) {
                                 symbol = shortlist[s,]$TICKER
                                 load(paste(path, symbol, ".Rdata", sep = ""))
+                                nd<-unique(md)
                                 price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, "settle"]
                                 if (length(price) > 0) {
                                         size = as.integer(value / price)
@@ -826,6 +830,7 @@ smclo <- function() {
                                                                         sep = ""
                                                                 )
                                                         )
+                                                        md<-unique(md)
                                                         price = md[as.Date(md$date,
                                                                            tz = "Asia/Kolkata") == date, 'settle']
                                                         size = as.integer(InvestmentValue / price)
