@@ -654,6 +654,7 @@ smclo <- function() {
                                                                 sep = ""
                                                         )
                                                 )
+                                                md<-unique(md)
                                                 OverBought = runSum(RSI(
                                                         md$asettle,
                                                         2
