@@ -7,6 +7,7 @@ library(RTrade)
 library(PerformanceAnalytics)
 library(lubridate)
 
+#### SETUP ####
 options(scipen = 999)
 
 args.commandline = commandArgs(trailingOnly = TRUE)
@@ -383,7 +384,7 @@ UpdatePortfolioBuy <-
                         for (s in 1:nrow(shortlist)) {
                                 symbol = shortlist[s,]$TICKER
                                 load(paste(path, symbol, ".Rdata", sep = ""))
-                                nd<-unique(md)
+                                md<-unique(md)
                                 price = md[as.Date(md$date, tz = "Asia/Kolkata") == date, "settle"]
                                 if (length(price) > 0) {
                                         size = as.integer(value / price)
@@ -481,6 +482,7 @@ updatePortfolioSplits<-function(Portfolio,splits){
         }
         Portfolio
 }
+
 
 #### ALGORITHM ####
 smclo <- function() {
