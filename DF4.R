@@ -6,7 +6,7 @@ library(bizdays)
 
 generatedf4=TRUE
 
-folder="20160923"
+folder="20170930"
 #setwd("C:/Users/Pankaj/Documents/Dropbox/servers/FundamentalData/20160730")
 setwd(paste("/home/psharma/Dropbox/servers/FundamentalData/",folder,sep=""))
 
@@ -33,7 +33,7 @@ if (length(args) > 0)
   seedWACC <- args[8]
   
 } else{
-  finyear = 2016
+  finyear = 2017
   taxRate = 0.30
   floorInterestRate = 0.09
   growthRate = 0.05
@@ -337,16 +337,18 @@ for (i in 1:nrow(df4)){
     load(paste("/home/psharma/Dropbox/rfiles/daily/", symbol, ".Rdata", sep = ""))
     startindex=which(as.Date(md$date,tz="Asia/Kolkata")==startdate)
     #endindex=which(as.Date(md$date,tz="Asia/Kolkata")==enddate)
-    endindex=tail(which(md$date<=enddate),1)
+    endindex=tail(which(as.Date(md$date,tz="Asia/Kolkata")<=enddate),1)
     if(length(startindex)==1 && startindex>251){
       df4$CurrentRSI[i]=RSI(md$asettle, RSIPeriod)[startindex]
       df4$OverSold[i] = (runSum(RSI(md$asettle, 2) < 20, 2) ==2)[startindex]
       df4$AnnualizedSlope[i] = exp(slope(md$asettle[(startindex-251):startindex]))^252-1
       shareoutstandingindex=tail(which(as.Date(md$date,tz="Asia/Kolkata")<=df4$sharesOutstandingDate[i]),1)
-      df4$THEORETICALVALUE[i]=df4$THEORETICALVALUE[i]*md[shareoutstandingindex,'splitadjust']/md[endindex,'splitadjust']
+      # Theoretical Value is calculated on the sharesOutstandingDate. Do we need to convert it to end-date?
+      # Yes. Valuation should be as of last date of the financial year, as comparision lastprice is also the last price of the  financial year
+      df4$THEORETICALVALUE[i]=df4$THEORETICALVALUE[i]*md[endindex,'splitadjust']/md[shareoutstandingindex,'splitadjust']
       df4$r[i]=r2(md$asettle[(startindex-251):startindex])
       df4$sumproduct[i]=df4$AnnualizedSlope[i]*df4$r[i]
-      lastprice=md$settle[startindex]
+      lastprice=md$settle[endindex]
       df4$UPSIDE[i]=(df4$THEORETICALVALUE[i]-lastprice)*100/lastprice
       df4$UPSIDE[i]=trunc(df4$UPSIDE[i],0)
       df4$UPSIDE[i]=as.numeric(df4$UPSIDE[i])
