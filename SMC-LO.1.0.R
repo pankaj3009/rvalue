@@ -224,8 +224,15 @@ GetDF4FileName <- function(date) {
         fileName
 }
 
+GetValuationDate<-function(date){
+        year = substring(date, 1, 4)
+        date.string=paste(year,"03","31",sep="-")
+        as.Date(date.string,tz="Asia/Kolkata")
+}
+
 UpdateDF4Upside <-
         function(df4,
+                 valuationdate,
                  settledate,
                  datafolder,
                  WorkingDaysForSlope = 252) {
@@ -325,10 +332,11 @@ UpdateDF4Upside <-
                                                 as.Date(md$date, tz = "Asia/Kolkata") <= df4$sharesOutstandingDate[i]
                                         ),
                                         1)
+                                        valuationindex=tail(which(as.Date(md$date,tz="Asia/Kolkata")<=valuationdate),1)
                                         if (length(shareoutstandingindex) == 1) {
                                                 if (!is.na(df4$sharesOutstandingDate[i]) &&
                                                     as.Date(settledate, tz = "Asia/Kolkata") > df4$sharesOutstandingDate[i]) {
-                                                        df4$THEORETICALVALUE[i] = df4$THEORETICALVALUE[i] / md[shareoutstandingindex, 'splitadjust']
+                                                        df4$THEORETICALVALUE[i] = df4$THEORETICALVALUE[i] *md[endlength,'splitadjust'] / md[valuationindex, 'splitadjust']
                                                         #print(paste(symbol,df4$sharesOutstandingDate,settledate,sep=","))
                                                 }
                                                 df4$UPSIDE[i] = (df4$THEORETICALVALUE[i] - lastprice) * 100 / lastprice
@@ -771,9 +779,11 @@ smclo <- function() {
                             DistinctPurchasesThisMonth < kTradesPerMonth &&
                             date < as.Date(kBackTestEndDate)) {
                                 load(GetDF4FileName(date))
+                                valuationdate=
                                 df4 = df4[df4$UPSIDE > (kUpside - 50), ] # get a smaller list of df4 that has a positive upside
+                                valuationdate=GetValuationDate(date)
                                 df4 <-
-                                        UpdateDF4Upside(df4,
+                                        UpdateDF4Upside(df4,valuationdate,
                                                         as.character(date),
                                                         kNiftyDataFolder)
                                 if (!kRequireOverSold) {
