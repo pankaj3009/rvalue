@@ -779,7 +779,6 @@ smclo <- function() {
                             DistinctPurchasesThisMonth < kTradesPerMonth &&
                             date < as.Date(kBackTestEndDate)) {
                                 load(GetDF4FileName(date))
-                                valuationdate=
                                 df4 = df4[df4$UPSIDE > (kUpside - 50), ] # get a smaller list of df4 that has a positive upside
                                 valuationdate=GetValuationDate(date)
                                 df4 <-
