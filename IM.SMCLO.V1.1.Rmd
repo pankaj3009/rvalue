@@ -1,36 +1,119 @@
-timer.start=Sys.time()
-library(TTR)
-library(log4r)
-library(RTrade)
-library(tableHTML)
-library(gmailr)
+---
+params:
+  algorithm: "VALUE02"
+  output_file: "VALUE02"
+output:
+  pdf_document:
+   number_sections: true
+keep_tex: yes
+---
 
-# Parallel version of SMC-LO.1.0.R
+---
+title: "Result Summary for Algorithm investing across NSE Stocks based on Valuation (`r params$algorithm`)"
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyfoot[CO,CE]{This information memorandum may not be reproduced, copied or replicated in any form with the authorization of inCurrency Business Solutions LLP}
+- \fancyfoot[LE,RO]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+---
+<style type="text/css">
 
-#### SETUP ####
-options(scipen = 999)
-
-args.commandline = commandArgs(trailingOnly = TRUE)
-if (length(args.commandline) > 0) {
-        args <- args.commandline
+body{ /* Normal  */
+   font-size: 12px;
 }
+td {  /* Table  */
+   font-size: 12px;
+}
+  th {
+    font-family: Arial; 
+    font-size: 12pt;
+    height: 20px;
+    font-weight: bold;
+    background-color: #ccccff;
+  }
+h1 { /* Header 1 */
+ font-size: 28px;
+/* color: DarkBlue;*/
+}
+h2 { /* Header 2 */
+ font-size: 22px;
+/* color: DarkBlue;*/
+}
+h3 { /* Header 3 */
+ font-size: 18px;
+ /*color: DarkBlue;*/
+}
+code.r{ /* Code block */
+  font-size: 10px;
+}
+pre { /* Code block */
+  font-size: 10px
+}
+</style>
 
-### Read Parameters ###
+
+# About SMCLO
+SMCLO is a long only investment algorithm based on DCF valuation. The algorithm selects stocks that are deemed to be undervalued, based on inCurrency’s implementation of the DCF model. The financial spreading information are from Reuters Fundamentals, sourced via licensing from Interactive Brokers.  Given its focus on valuation, SMCLO tends to pick small and mid-cap stocks. 
+
+SMCLO requires the investment process to mature with current recommendation of five-year investment horizon. However, individual stocks are churned after a minimum holding (currently at one year).
+
+The investment algorithm is a combination of money management and stock picking.
+
+##Key Definitions
+###MTM
+Mark to Market of the holdings of the client  
+
+###Ramp Months
+The duration, in months, during which the algorithm is either buying or selling. There is no churn during this period.
+
+###Committed Capital
+The capital that the client wants to manage using SMCLO.  
+
+###Target Portfolio Value
+The target MTM that SMCLO determines for each month.   
+
+###Actual Portfolio Value
+The MTM of the open equity positions initiated by SMCLO.  
+
+###Initiation Month
+The month when SMCLO becomes operational for the client.  
+
+###End Month
+The month when SMCLO closes all positions.  
+
+###Rotate Start Month
+The month, *Ramp Months* after the *Initiation Month*. So, for example if the Initiation Month is June 2016, and *Ramp Months* is 12, the *End Month* would be May 2017.  
+
+###Liquidate Start Month
+The month, *Ramp Months* before the *End Month*. So, for example if the *End Month* is June 2021, and *Ramp Months* is 12, the *Liquidate Start Month* would be July 2020.  
+
+##Money Management
+1. The algorithm attempts to hold the *Target Portfolio Value* that provides a 10% simple interest gain per annum. The *Target Portfolio Value* is calculated at the beginning of each Month, and is valid for the month.  
+2. With the 10% growth, the algorithm will attempt to completely invest the *Committed Capital* at the beginning of the *Rotate Start Month*.  
+3. From the *Rotate Start Month*, the algorithm will attempt to hold the growth in *Actual Portfolio Value* to a 10% per annum simple interest, where 10% is a proxy for inflation. If the portfolio outperforms, the excess cash can be taken out by the client. However, if the portfolio underperforms, the client will need to inject capital.  Effectively, we are trying to ensure that the client maintains purchasing power for the duration of the investment, and excess returns are returned, as generated.  
+4. Algorithm will keep the 10% pa growth till beginning of the *Liquidate Start Month*. Once *Liquidate Start Month* , the algorithm starts unwinding, and brings the portfolio value down to zero at the end of the *Ramp Months* following the *Liquidate Start Month*.  
+
+##Stock Picking
+1. The valuation levels are calculated each working day, based on the closing price of the prior trading session.
+2. Each purchase is held for a minimum of 370 days.
+3. Stock that are shortlisted for purchases need to be undervalued by a minimum threshold. In addition, there are filters on the price patterns including  
+    a. Trend line using regression on closing prices should have a positive return over the last 12 months –potential undervaluation should be evidenced by positive returns.
+    b. The coefficient of restitution of the regression fit should be higher than a specified value - This prevents us from picking stocks that are undervalued, but have had a large historical realized volatility.
+    c. Minium Dividend payout ratio in the last annual reported results- A hedge against paper profits.
+    d. Minimum hurdle ROCE in the last annual reported result – Efficiency of operations.
+4. Purchases are made when the stocks meeting the filters are oversold in short term. Similarly, exits are made when stocks have been in the portfolio for atleast *Ramp Months* and are overbought.
+
+```{r setoptions,echo=FALSE,message=FALSE,warning=FALSE, results="hide"}
+library(knitr)
+library(RTrade)
+opts_chunk$set(echo=FALSE,message=FALSE,warning=FALSE,results="hide")
+library(rredis)
 redisConnect()
 redisSelect(1)
-
-if (length(args) > 1) {
-        static <- redisHGetAll(toupper(args[2]))
-} else{
-        static <- redisHGetAll("SMC-LO")
-}
-
-newargs <- unlist(strsplit(static$args, ","))
-if (length(args) <= 1 && length(newargs > 1)) {
-        args <- newargs
-}
-
-redisClose()
+static <- redisHGetAll(as.character(params$algorithm))
+args <- unlist(strsplit(static$args, ","))
 kBackTest <- as.logical(static$BackTest)
 kWriteToRedis <- as.logical(static$WriteToRedis)
 kBackTestStartDate <- static$BackTestStartDate
@@ -40,6 +123,7 @@ kTimeZone <- static$TimeZone
 kValueBrokerage <- as.numeric(static$BrokerageOnValue) / 100
 kPerContractBrokerage=0
 kHomeDirectory = static$HomeDirectory
+
 kCommittedCapital = as.numeric(static$CommittedCapital)
 kLogFile = static$LogFile
 kStrategy = args[2]
@@ -63,9 +147,25 @@ kSlope = as.numeric(static$Slope)
 kTradesPerMonth = as.numeric(static$TradesPerMonth)
 kExitDays = as.numeric(static$ExitDays)
 kWorkingDaysForSlope = as.numeric(static$WorkingDaysForSlope)
+holidays=readRDS(paste(datafolder,"static/holidays.rds",sep=""))
+RQuantLib::addHolidays("India",holidays)
+
 kBackTestEndDate = strftime(adjust("India", as.Date(kBackTestEndDate, tz = kTimeZone), bdc = 2), "%Y-%m-%d")
 kBackTestStartDate = strftime(adjust("India", as.Date(kBackTestStartDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
 kBackTestCloseAllDate = strftime(adjust("India", as.Date(kBackTestCloseAllDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
+redisClose()
+
+```
+<P style="page-break-before: always">
+\newpage  
+# Run Results [5 year committment, starting `r kBackTestStartDate` with minimum holding duration = 12 months]
+```{r maincodeline,cache=FALSE}
+library(TTR)
+library(log4r)
+library(RTrade)
+
+options(scipen=999)
+
 
 logger <- create.logger()
 logfile(logger) <- kLogFile
@@ -75,9 +175,6 @@ levellog(logger, "INFO", "Starting EOD Scan")
 holidays=readRDS(paste(datafolder,"static/holidays.rds",sep=""))
 RQuantLib::addHolidays("India",holidays)
 
-if(!is.null(kHomeDirectory)){
-        setwd(kHomeDirectory)
-}
 
 #### FUNCTIONS ####
 
@@ -177,8 +274,9 @@ for (i in 1:length(symbolslist)){
                         # referencevalue is value of share adjusted to asettle...
                         md[md$date>=shortlist$startdate & md$date<=shortlist$enddate, 'referencevalue']=shortlist$value[1]/md[md$date>=shortlist$startdate & md$date<=shortlist$enddate, 'referencesplitadjust'] 
                 }
-                #md$buy=ifelse(md$eligible==1 & md$date<kBackTestEndDate & md$r2>kR2Fit/100 & md$slopereturn.refperiod >kSlope/100 & md$return.refperiod >kSlope/100 & md$asettle<md$predict & md$asettle>0.7*md$predict & md$date > symbols$financialdate[i] + 90*24*60*60 & md$oversold & md$rsi<kRSIEntry & (md$referencevalue-md$asettle)*100/md$asettle>kUpside & md$drawdown<1,1,0)
+                # md$buy=ifelse(md$eligible==1 & md$date<kBackTestEndDate & md$r2>kR2Fit/100 & md$slopereturn.refperiod >kSlope/100 & md$return.refperiod >kSlope/100 & md$asettle<md$predict & md$asettle>0.7*md$predict & md$date > symbols$financialdate[i] + 90*24*60*60 & md$oversold & md$rsi<kRSIEntry & (md$referencevalue-md$asettle)*100/md$asettle>kUpside & md$drawdown<1,1,0)
                 md$buy=ifelse(md$eligible==1 & md$date<kBackTestEndDate & md$r2>kR2Fit/100 & md$slopereturn.refperiod >kSlope/100 & md$return.refperiod >kSlope/100 & md$date > symbols$financialdate[i] + 90*24*60*60 & md$oversold & md$rsi<kRSIEntry & (md$referencevalue-md$asettle)*100/md$asettle>kUpside & md$drawdown<1,1,0)
+                
                 md$buycount<-ave(md$buy, md$month, FUN = cumsum)
                 md$buy=ifelse(md$buycount==1 & Ref(md$buycount,-1)==0,1,0) # this gives unique  value to buy signal for md
                 md$sell=ifelse(md$rsi>kRSIExit,1,0)
@@ -256,26 +354,30 @@ if(nrow(trades)>0){
         }
 }
 
-#### WRITE TO REDIS ####
-if(!kBackTest & kWriteToRedis){
-        saveRDS(trades,file=paste(args[2],"_trades_",strftime(Sys.time(),format="%Y-%m-%d %H-%M-%S"),".rds",sep=""))
-        saveRDS(signals,file=paste(args[2],"_signals_",strftime(Sys.time(),format="%Y-%m-%d %H-%M-%S"),".rds",sep=""))
-        referencetime=adjust("India",Sys.Date()-1,bdc=2)
-        referencetime=strftime(referencetime,format="%Y-%m-%d")
-        referencetime=as.POSIXct(referencetime,tz=kTimeZone)
-        order=data.frame( OrderType="LMT",
-                          OrderStage="INIT",
-                          TriggerPrice="0",
-                          Scale="TRUE",
-                          TIF="GTC",
-                          OrderReference=tolower(args[2]),
-                          stringsAsFactors = FALSE)
-        placeRedisOrder(trades,referencetime,order,args[3],setLimitPrice=TRUE)
-}
 
-#### BACKTEST ####
-if(kBackTest){
-        bizdays=unique(signals$date)
+```
+
+The parameters for the run were set as follows:  
+
+##Envelope Parameters  
+- Committed Capital = `r formatC(kCommittedCapital, format="d", big.mark=',')`
+- Ramp Months = `r kDeployMonths`
+- Initiation Month = `r kBackTestStartDate`
+- End Month = `r kBackTestCloseAllDate`
+
+##Stock Picking Parameters  
+- ROCE Threshold = `r kThresholdROCE`%
+- Historical Return over past 12 months = `r kSlope`%
+- Dividend Payout Ratio = `r kThresholdDividedPayoutPercent`%
+- Regression Fit = `r kR2Fit`
+- Minimum Market Cap = `r kMinMarketCap` `r ifelse(kMinMarketCap==0,", i.e. No Market Cap Filter","")`
+- Minimum Theoretical Undervaluation = `r kUpside`%
+- Brokerage per trade on value of trade @ `r kValueBrokerage`%
+
+## SMCLO Performance Metrics
+```{r maincodelinemetrics}
+library(RTrade)
+     bizdays=unique(signals$date)
         if(kBackTestCloseAllDate<Sys.Date()){
                 trades[which(is.na(trades$exittime)),'exittime']=as.POSIXct(kBackTestCloseAllDate,tz=kTimeZone)
         }
@@ -302,16 +404,19 @@ if(kBackTest){
         cumpnl$cashflow[nrow(cumpnl)]=cumpnl$cashflow[nrow(cumpnl)]+(cumpnl$longnpv+cumpnl$shortnpv)[nrow(cumpnl)]
         xirr=xirr(cumpnl$cashflow,cumpnl$bizdays,trace = TRUE)
         
-        # print stats
-        print(paste("# Trades:",nrow(trades)))
-        print(paste("Profit as Sum of Equity Trades:",specify_decimal(sum(DailyPNLWorking),0)))
-        print(paste("Win Ratio:",sum(trades$abspnl>0)*100/nrow(trades)))
-        print(paste("Avg % Gain Per Winning Trade:",specify_decimal(mean(trades$netpercentprofit[trades$netpercentprofit>0])*100,1)))
-        print(paste("Avg % Loss Per Losing Trade:",specify_decimal(mean(trades$netpercentprofit[trades$netpercentprofit<0])*100,1)))
-        print(paste("Avg % Profit Per Trade:",specify_decimal(mean(trades$netpercentprofit)*100,1)))
-        print(paste("Avg Holding Days:",sum(trades$bars)/nrow(trades)))
-        
-        # graph portfolio npv, target and gap
+```
+
+
+- IRR = `r sprintf("%3.2f",xirr* 100)`%
+- Win Ratio = `r sprintf("%3.2f",sum(trades$abspnl>0)*100/nrow(trades))`%
+- Sharpe Ratio = `r sprintf("%3.2f",sharpe)`
+- Absolute P&L = `r  formatC(sum(trades$abspnl),format="d", big.mark=',')`
+
+These metrics include brokerage costs but exclude impact of license fees to be paid for running this Algorithm.
+
+
+## Portfolio Buildup
+```{r PortfolioBuildUpPlot, results="asis",fig.height=6,fig.width=10}
         TargetPortfolioValue.bizdays=TargetPortfolioValue[match(cumpnl$bizdays,TargetPortfolioValue$date),]
         my.range <- range(cumpnl$longnpv+cumpnl$shortnpv)
         plot(
@@ -381,7 +486,21 @@ if(kBackTest){
                 bty = "n",
                 xjust = 1
         )
-        
+
+
+```
+
+As seen from the graph, the *Target Portfolio Value* steps up at the beginning of the construction. It then has a stable growth rate, before falling in the divestment phase.
+
+The *Actual Portfolio Value* is denoted by the dashed line. It moves is correlated to the *Target Portfolio Value*.
+
+The difference between the *Target Portfolio Value* and *Actual Portfolio Value* is denoted by the dotted line, Gap. Positive Gap is on account of unavailability of purchase candidates, exits on defined conditions resulting in surplus cash.  
+
+
+
+## Profit & Loss Graph
+```{r ProfitPlot, results="asis",fig.height=6,fig.width=10}
+
         # graph p&l
         plot(
                 x = cumpnl$bizdays,
@@ -423,48 +542,41 @@ if(kBackTest){
                           paste("XIRR:",RTrade::specify_decimal(xirr,2),sep=" ")),
                 bty="n"
         )
-        
-        # benchmark vs strategy
-        # Cumul                 Year 1 Year 2 Year 3 ....
-        # IRR
-        # Sharpe
-        # YE Equity
-}
 
-timer.end=Sys.time()
-runtime=timer.end-timer.start
-print(runtime)
-#### RECONCILE WITH REDIS ####
-pattern=paste("*trades*",tolower(args[2]),"*",sep="")
-actualRedis=RTrade::createPNLSummary(args[3],pattern,kBackTestStartDate,kBackTestCloseAllDate)
-actualRedis=actualRedis[actualRedis$netposition!=0,]
-redispositions=aggregate(netposition~symbol,actualRedis,FUN=sum)
-strategyPositions=filter(trades,is.na(exittime))
-strategyPositions=aggregate(size~symbol,strategyPositions,FUN=sum)
-positions=merge(redispositions,strategyPositions,all.x = TRUE,all.y = TRUE)
-positions$netposition=ifelse(is.na(positions$netposition),0,positions$netposition)
-positions$size=ifelse(is.na(positions$size),0,positions$size)
-names(positions)=c("symbol","RedisPosition","StrategyRequirement")
-excessInRedis=filter(positions,(RedisPosition>0 & RedisPosition > StrategyRequirement)| (RedisPosition<0 & RedisPosition < StrategyRequirement))
-excessInRedis$excess=excessInRedis$RedisPosition-excessInRedis$StrategyRequirement
-if(nrow(excessInRedis)>0){
-        body= paste0("<p> The following positions are superflous to strategy and should be immediately corrected manually:",args[2],". </p>", tableHTML(excessInRedis))
-        mime() %>%
-                to("psharma@incurrency.com") %>%
-                from("reporting@incurrency.com") %>%
-                subject(paste0("Positions as per execution logs that are NOT MANAGED by strategy ",args[2])) %>% 
-                html_body(body) %>% 
-                send_message()
-}
+```
 
-shortInRedis=filter(positions,(StrategyRequirement>0 & RedisPosition < StrategyRequirement)| (StrategyRequirement<0 & RedisPosition > StrategyRequirement))
-shortInRedis$shortfall=shortInRedis$StrategyRequirement-shortInRedis$RedisPosition
-if(nrow(shortInRedis)>0){
-        body= paste0("<p> The following positions are required by strategy but not executed as per execution logs:",args[2],". </p>", tableHTML(shortInRedis))
-        mime() %>%
-                to("psharma@incurrency.com") %>%
-                from("reporting@incurrency.com") %>%
-                subject(paste0("Positions that can be executed manually to catch upto to strategy positions ",args[2])) %>% 
-                html_body(body) %>% 
-                send_message()
-}
+## Deployed Cash
+```{r CashPlot, results="asis",fig.height=6,fig.width=10}
+plot(x = cumpnl$bizdays,
+     y = cumpnl$cashdeployed,
+     type = 'l',main="Deployed Cash",xlab="Date",ylab="Deployed Cash",axes=FALSE)
+axis.POSIXct(
+        1,
+        cumpnl$bizdays,
+        at = seq(
+                min(cumpnl$bizdays),
+                max(cumpnl$bizdays) + 90,
+                by = "3 mon"
+        ),
+        format = "%m-%Y",
+        labels=TRUE
+)
+minProfit=min(cumpnl$cashdeployed)
+maxProfit=max(cumpnl$cashdeployed)
+points=pretty(seq(minProfit,maxProfit,by=(maxProfit-minProfit)/5))
+axis(2,at=points,labels=paste(points/1000000,"M",sep=""),las=1)
+```
+
+Postive values of Deployed Cash provide view of the money invested in the algorithm. Negative Values of Deployed Cash denote withdrawals from the algorithm.
+
+## Trades List
+List of trades and open positions are below
+```{r Trades, results="asis"}
+library(formattable)
+out=trades
+out$abspnl=currency(out$abspnl,"",digits = 0)
+print(kable(select(out,symbol,size,entrytime,exittime,abspnl)), type="latex", comment=FALSE)
+
+```
+
+Absolute P&L = `r  formatC(sum(trades$abspnl),format="d", big.mark=',')`
