@@ -54,10 +54,10 @@ pre { /* Code block */
 </style>
 
 
-# About SMCLO
-SMCLO is a long only investment algorithm based on DCF valuation. The algorithm selects stocks that are deemed to be undervalued, based on inCurrency’s implementation of the DCF model. The financial spreading information are from Reuters Fundamentals, sourced via licensing from Interactive Brokers.  Given its focus on valuation, SMCLO tends to pick small and mid-cap stocks. 
+# About `r params$algorithm`
+`r params$algorithm` is a long only investment algorithm based on DCF valuation. The algorithm selects stocks that are deemed to be undervalued, based on inCurrency’s implementation of the DCF model. The financial spreading information are from Reuters Fundamentals, sourced via licensing from Interactive Brokers.  Given its focus on valuation, `r params$algorithm` tends to pick small and mid-cap stocks. 
 
-SMCLO requires the investment process to mature with current recommendation of five-year investment horizon. However, individual stocks are churned after a minimum holding (currently at one year).
+`r params$algorithm` requires the investment process to mature with current recommendation of five-year investment horizon. However, individual stocks are churned after a minimum holding (currently at one year).
 
 The investment algorithm is a combination of money management and stock picking.
 
@@ -72,16 +72,16 @@ The duration, in months, during which the algorithm is either buying or selling.
 The capital that the client wants to manage using SMCLO.  
 
 ###Target Portfolio Value
-The target MTM that SMCLO determines for each month.   
+The target MTM that `r params$algorithm` determines for each month.   
 
 ###Actual Portfolio Value
-The MTM of the open equity positions initiated by SMCLO.  
+The MTM of the open equity positions initiated by `r params$algorithm`  
 
 ###Initiation Month
-The month when SMCLO becomes operational for the client.  
+The month when `r params$algorithm` becomes operational for the client.  
 
 ###End Month
-The month when SMCLO closes all positions.  
+The month when `r params$algorithm` closes all positions.  
 
 ###Rotate Start Month
 The month, *Ramp Months* after the *Initiation Month*. So, for example if the Initiation Month is June 2016, and *Ramp Months* is 12, the *End Month* would be May 2017.  
@@ -95,15 +95,6 @@ The month, *Ramp Months* before the *End Month*. So, for example if the *End Mon
 3. From the *Rotate Start Month*, the algorithm will attempt to hold the growth in *Actual Portfolio Value* to a 10% per annum simple interest, where 10% is a proxy for inflation. If the portfolio outperforms, the excess cash can be taken out by the client. However, if the portfolio underperforms, the client will need to inject capital.  Effectively, we are trying to ensure that the client maintains purchasing power for the duration of the investment, and excess returns are returned, as generated.  
 4. Algorithm will keep the 10% pa growth till beginning of the *Liquidate Start Month*. Once *Liquidate Start Month* , the algorithm starts unwinding, and brings the portfolio value down to zero at the end of the *Ramp Months* following the *Liquidate Start Month*.  
 
-##Stock Picking
-1. The valuation levels are calculated each working day, based on the closing price of the prior trading session.
-2. Each purchase is held for a minimum of 370 days.
-3. Stock that are shortlisted for purchases need to be undervalued by a minimum threshold. In addition, there are filters on the price patterns including  
-    a. Trend line using regression on closing prices should have a positive return over the last 12 months –potential undervaluation should be evidenced by positive returns.
-    b. The coefficient of restitution of the regression fit should be higher than a specified value - This prevents us from picking stocks that are undervalued, but have had a large historical realized volatility.
-    c. Minium Dividend payout ratio in the last annual reported results- A hedge against paper profits.
-    d. Minimum hurdle ROCE in the last annual reported result – Efficiency of operations.
-4. Purchases are made when the stocks meeting the filters are oversold in short term. Similarly, exits are made when stocks have been in the portfolio for atleast *Ramp Months* and are overbought.
 
 ```{r setoptions,echo=FALSE,message=FALSE,warning=FALSE, results="hide"}
 library(knitr)
@@ -156,6 +147,17 @@ kBackTestCloseAllDate = strftime(adjust("India", as.Date(kBackTestCloseAllDate, 
 redisClose()
 
 ```
+
+##Stock Picking
+1. The valuation levels are calculated each working day, based on the closing price of the prior trading session.
+2. Each purchase is held for a minimum of `r kExitDays` days.
+3. Stock that are shortlisted for purchases need to be undervalued by a minimum threshold. In addition, there are filters on the price patterns including  
+    a. Trend line using regression on closing prices should have a positive return over the last `r kWorkingDaysForSlope` working days – potential undervaluation should be reinforced by positive returns.
+    b. The coefficient of restitution of the regression fit should be higher than a specified value - This prevents us from picking stocks that are undervalued, but have had a large historical realized volatility.
+    c. Minium Dividend payout ratio in the last annual reported results- A hedge against paper profits.
+    d. Minimum hurdle ROCE in the last annual reported result – Efficiency of operations.
+4. Purchases are made when the stocks meeting the filters are oversold in short term. Similarly, exits are made when stocks have been in the portfolio for atleast *Ramp Months* and are overbought.
+
 <P style="page-break-before: always">
 \newpage  
 # Run Results [5 year committment, starting `r kBackTestStartDate` with minimum holding duration = 12 months]
@@ -575,7 +577,7 @@ List of trades and open positions are below
 library(formattable)
 out=trades
 out$abspnl=currency(out$abspnl,"",digits = 0)
-print(kable(select(out,symbol,size,entrytime,exittime,abspnl)), type="latex", comment=FALSE)
+print(kable(select(out,symbol,size,entrytime,entryprice,exittime,exitprice,abspnl)), type="latex", comment=FALSE)
 
 ```
 

@@ -7,7 +7,7 @@ library(gmailr)
 
 # Parallel version of SMC-LO.1.0.R
 
-#### SETUP ####
+#### PARAMETERS ####
 options(scipen = 999)
 
 args.commandline = commandArgs(trailingOnly = TRUE)
@@ -254,8 +254,18 @@ if(nrow(trades)>0){
                         trades$exitprice[trades.open.index[i]]=tail(md$asettle,1)
                 }
         }
+        trades$entrybrokerage=ifelse(trades$entryprice==0,0,ifelse(grepl("BUY",trades$trade),kPerContractBrokerage+trades$entryprice*trades$size*kValueBrokerage,kPerContractBrokerage+trades$entryprice*trades$size*(kValueBrokerage+kSTTSell)))
+        trades$exitbrokerage=ifelse(trades$exitprice==0,0,ifelse(grepl("BUY",trades$trade),kPerContractBrokerage+trades$exitprice*trades$size*kValueBrokerage,kPerContractBrokerage+trades$exitprice*trades$size*(kValueBrokerage+kSTTSell)))
+        trades$brokerage=(trades$entrybrokerage+trades$exitbrokerage)/(2*trades$size)
+        trades$percentprofit<-ifelse(grepl("BUY",trades$trade),(trades$exitprice-trades$entryprice)/trades$entryprice,-(trades$exitprice-trades$entryprice)/trades$entryprice)
+        trades$percentprofit<-ifelse(trades$exitprice==0|trades$entryprice==0,0,trades$percentprofit)
+        trades$netpercentprofit <- trades$percentprofit - trades$brokerage/(trades$entryprice+trades$exitprice)/2
+        trades$abspnl=ifelse(trades$trade=="BUY",trades$size*(trades$exitprice-trades$entryprice),-trades$size*(trades$exitprice-trades$entryprice))-trades$entrybrokerage-trades$exitbrokerage
+        trades$abspnl=ifelse(trades$exitprice==0,0,trades$abspnl)
+        
 }
 
+#### MAP TO DERIVATIES ####
 #### WRITE TO REDIS ####
 if(!kBackTest & kWriteToRedis){
         saveRDS(trades,file=paste(args[2],"_trades_",strftime(Sys.time(),format="%Y-%m-%d %H-%M-%S"),".rds",sep=""))
@@ -281,14 +291,6 @@ if(kBackTest){
         }
         bizdays=bizdays[bizdays>=as.POSIXct(kBackTestStartDate,tz=kTimeZone) & bizdays<=as.POSIXct(kBackTestCloseAllDate,tz=kTimeZone)]
         pnl<-data.frame(bizdays,realized=0,unrealized=0,brokerage=0)
-        trades$entrybrokerage=ifelse(trades$entryprice==0,0,ifelse(grepl("BUY",trades$trade),kPerContractBrokerage+trades$entryprice*trades$size*kValueBrokerage,kPerContractBrokerage+trades$entryprice*trades$size*(kValueBrokerage+kSTTSell)))
-        trades$exitbrokerage=ifelse(trades$exitprice==0,0,ifelse(grepl("BUY",trades$trade),kPerContractBrokerage+trades$exitprice*trades$size*kValueBrokerage,kPerContractBrokerage+trades$exitprice*trades$size*(kValueBrokerage+kSTTSell)))
-        trades$brokerage=(trades$entrybrokerage+trades$exitbrokerage)/(2*trades$size)
-        trades$percentprofit<-ifelse(grepl("BUY",trades$trade),(trades$exitprice-trades$entryprice)/trades$entryprice,-(trades$exitprice-trades$entryprice)/trades$entryprice)
-        trades$percentprofit<-ifelse(trades$exitprice==0|trades$entryprice==0,0,trades$percentprofit)
-        trades$netpercentprofit <- trades$percentprofit - trades$brokerage/(trades$entryprice+trades$exitprice)/2
-        trades$abspnl=ifelse(trades$trade=="BUY",trades$size*(trades$exitprice-trades$entryprice),-trades$size*(trades$exitprice-trades$entryprice))-trades$entrybrokerage-trades$exitbrokerage
-        trades$abspnl=ifelse(trades$exitprice==0,0,trades$abspnl)
         cumpnl<-CalculateDailyPNL(trades,pnl,trades$brokerage,deriv=FALSE)
         
         # calculate sharpe
@@ -431,11 +433,26 @@ if(kBackTest){
         # YE Equity
 }
 
-timer.end=Sys.time()
-runtime=timer.end-timer.start
-print(runtime)
 #### RECONCILE WITH REDIS ####
+
 pattern=paste("*trades*",tolower(args[2]),"*",sep="")
+actualRedis=RTrade::createPNLSummary(0,pattern,kBackTestStartDate,kBackTestCloseAllDate)
+body=paste0("Expected P&L for the period : ",formatC(specify_decimal(sum(trades$abspnl),0),format="d",big.mark = ","),"<br>")
+body=paste0(body,"Actual P&L for the period : ",formatC(specify_decimal(sum(actualRedis$netprofit),0),format="d",big.mark = ","),"<br><br>")
+
+
+trades.selected.columns=filter(trades,exitreason=="Open") %>% select(symbol,trade,size,entrytime,entryprice,exittime,mtmprice=exitprice,pnl=abspnl)
+trades.selected.columns$pnl=formatC(specify_decimal(trades.selected.columns$pnl,0),format="d",big.mark = ",")
+body=paste0(body,"Open Trades Expected by Algorithm",tableHTML(trades.selected.columns,border=1),"<br>")
+
+pattern=paste("*trades*",tolower(args[2]),"*",sep="")
+actualRedis=RTrade::createPNLSummary(0,pattern,kBackTestStartDate,kBackTestCloseAllDate)
+openTrades=filter(actualRedis,is.na(exittime)) %>% select(symbol,trade,entrysize,entrytime,entryprice,exittime,mtmprice=exitprice,pnl=netprofit)
+openTrades$entryprice=specify_decimal(openTrades$entryprice,2)
+openTrades$pnl=formatC(specify_decimal(openTrades$pnl,0),format="d",big.mark = ",")
+
+body= paste0(body,"Open Trades In Algorithm logs.","</p>", tableHTML(openTrades,border = 1),"<br>")
+
 actualRedis=RTrade::createPNLSummary(args[3],pattern,kBackTestStartDate,kBackTestCloseAllDate)
 actualRedis=actualRedis[actualRedis$netposition!=0,]
 redispositions=aggregate(netposition~symbol,actualRedis,FUN=sum)
@@ -447,24 +464,25 @@ positions$size=ifelse(is.na(positions$size),0,positions$size)
 names(positions)=c("symbol","RedisPosition","StrategyRequirement")
 excessInRedis=filter(positions,(RedisPosition>0 & RedisPosition > StrategyRequirement)| (RedisPosition<0 & RedisPosition < StrategyRequirement))
 excessInRedis$excess=excessInRedis$RedisPosition-excessInRedis$StrategyRequirement
+
 if(nrow(excessInRedis)>0){
-        body= paste0("<p> The following positions are superflous to strategy and should be immediately corrected manually:",args[2],". </p>", tableHTML(excessInRedis))
-        mime() %>%
-                to("psharma@incurrency.com") %>%
-                from("reporting@incurrency.com") %>%
-                subject(paste0("Positions as per execution logs that are NOT MANAGED by strategy ",args[2])) %>% 
-                html_body(body) %>% 
-                send_message()
+        body= paste0(body,"The following positions are superflous to strategy and should be immediately corrected manually:",args[2],".", tableHTML(excessInRedis,border = 1),"<br>")
 }
 
 shortInRedis=filter(positions,(StrategyRequirement>0 & RedisPosition < StrategyRequirement)| (StrategyRequirement<0 & RedisPosition > StrategyRequirement))
 shortInRedis$shortfall=shortInRedis$StrategyRequirement-shortInRedis$RedisPosition
 if(nrow(shortInRedis)>0){
-        body= paste0("<p> The following positions are required by strategy but not executed as per execution logs:",args[2],". </p>", tableHTML(shortInRedis))
-        mime() %>%
-                to("psharma@incurrency.com") %>%
-                from("reporting@incurrency.com") %>%
-                subject(paste0("Positions that can be executed manually to catch upto to strategy positions ",args[2])) %>% 
-                html_body(body) %>% 
-                send_message()
+        body= paste0(body," The following positions are required by strategy but not executed as per execution logs:",args[2],". </p>", tableHTML(shortInRedis,border=1),"<br>")
 }
+
+mime() %>%
+        to("psharma@incurrency.com") %>%
+        from("reporting@incurrency.com") %>%
+        subject(paste0("Run Summary for ",args[2])) %>% 
+        html_body(body) %>% 
+        send_message()
+
+#### PRINT RUN TIME ####
+timer.end=Sys.time()
+runtime=timer.end-timer.start
+print(runtime)
