@@ -62,10 +62,16 @@ kR2Fit = as.numeric(static$R2Fit)
 kSlope = as.numeric(static$Slope)
 kTradesPerMonth = as.numeric(static$TradesPerMonth)
 kExitDays = as.numeric(static$ExitDays)
+kInvestmentReturn = as.numeric(static$InvestmentReturn)
+kOverdraftPenalty=as.numeric(static$OverdraftPenalty)
+kMargin=1
+kBrokerage=fromJSON(static$Brokerage)
+kSubscribers=fromJSON(static$Subscribers)
 kWorkingDaysForSlope = as.numeric(static$WorkingDaysForSlope)
 kBackTestEndDate = strftime(adjust("India", as.Date(kBackTestEndDate, tz = kTimeZone), bdc = 2), "%Y-%m-%d")
 kBackTestStartDate = strftime(adjust("India", as.Date(kBackTestStartDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
 kBackTestCloseAllDate = strftime(adjust("India", as.Date(kBackTestCloseAllDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
+
 
 logger <- create.logger()
 logfile(logger) <- kLogFile
@@ -97,7 +103,7 @@ CalculateNPV <-function(portfolio,date){
                 #         assign(portfolio$symbol[l],loadSymbol(portfolio$symbol[l]))
                 # }
                 # portfolio$mtm[l]=get(portfolio$symbol[l])%>%filter(date<=date)%>%select(asettle)%>%filter(row_number==1)
-                portfolio$mtm[l]=getmtm(portfolio$symbol[l],date)
+                portfolio$mtm[l]=getmtm(portfolio$symbol[l],date)$value
         }
         portfolio$mv=portfolio$size*portfolio$mtm
         sum(portfolio$mv)
@@ -242,27 +248,7 @@ if(nrow(trades)>0){
         }
         saveRDS(trades,file="trades.rds")
         trades=dplyr::filter(trades,size>0)
-        
-        # update mtm
-        trades.open.index=which(trades$exitreason=="Open")
-        # update open position mtm price
-        if(length(trades.open.index)>0){
-                for(i in 1:length(trades.open.index)){
-                        symbol=trades$symbol[trades.open.index[i]]
-                        md=loadSymbol(symbol,realtime = FALSE,days=2000)
-                        md=md[which(as.Date(md$date,tz=kTimeZone)<=min(as.Date(kBackTestCloseAllDate),Sys.Date())),]
-                        trades$exitprice[trades.open.index[i]]=tail(md$asettle,1)
-                }
-        }
-        trades$entrybrokerage=ifelse(trades$entryprice==0,0,ifelse(grepl("BUY",trades$trade),kPerContractBrokerage+trades$entryprice*trades$size*kValueBrokerage,kPerContractBrokerage+trades$entryprice*trades$size*(kValueBrokerage+kSTTSell)))
-        trades$exitbrokerage=ifelse(trades$exitprice==0,0,ifelse(grepl("BUY",trades$trade),kPerContractBrokerage+trades$exitprice*trades$size*kValueBrokerage,kPerContractBrokerage+trades$exitprice*trades$size*(kValueBrokerage+kSTTSell)))
-        trades$brokerage=(trades$entrybrokerage+trades$exitbrokerage)/(2*trades$size)
-        trades$percentprofit<-ifelse(grepl("BUY",trades$trade),(trades$exitprice-trades$entryprice)/trades$entryprice,-(trades$exitprice-trades$entryprice)/trades$entryprice)
-        trades$percentprofit<-ifelse(trades$exitprice==0|trades$entryprice==0,0,trades$percentprofit)
-        trades$netpercentprofit <- trades$percentprofit - trades$brokerage/(trades$entryprice+trades$exitprice)/2
-        trades$abspnl=ifelse(trades$trade=="BUY",trades$size*(trades$exitprice-trades$entryprice),-trades$size*(trades$exitprice-trades$entryprice))-trades$entrybrokerage-trades$exitbrokerage
-        trades$abspnl=ifelse(trades$exitprice==0,0,trades$abspnl)
-        
+        trades=revalPortfolio(trades,kBrokerage,realtime=FALSE)
 }
 
 #### MAP TO DERIVATIES ####
@@ -291,7 +277,7 @@ if(kBackTest){
         }
         bizdays=bizdays[bizdays>=as.POSIXct(kBackTestStartDate,tz=kTimeZone) & bizdays<=as.POSIXct(kBackTestCloseAllDate,tz=kTimeZone)]
         pnl<-data.frame(bizdays,realized=0,unrealized=0,brokerage=0)
-        cumpnl<-CalculateDailyPNL(trades,pnl,trades$brokerage,deriv=FALSE)
+        cumpnl<-CalculateDailyPNL(trades,pnl,kBrokerage)
         
         # calculate sharpe
         CumPNL <-  cumpnl$realized + cumpnl$unrealized - cumpnl$brokerage
@@ -433,55 +419,10 @@ if(kBackTest){
         # YE Equity
 }
 
-#### RECONCILE WITH REDIS ####
-
-pattern=paste("*trades*",tolower(args[2]),"*",sep="")
-actualRedis=RTrade::createPNLSummary(0,pattern,kBackTestStartDate,kBackTestCloseAllDate)
-body=paste0("Expected P&L for the period : ",formatC(specify_decimal(sum(trades$abspnl),0),format="d",big.mark = ","),"<br>")
-body=paste0(body,"Actual P&L for the period : ",formatC(specify_decimal(sum(actualRedis$netprofit),0),format="d",big.mark = ","),"<br><br>")
-
-
-trades.selected.columns=filter(trades,exitreason=="Open") %>% select(symbol,trade,size,entrytime,entryprice,exittime,mtmprice=exitprice,pnl=abspnl)
-trades.selected.columns$pnl=formatC(specify_decimal(trades.selected.columns$pnl,0),format="d",big.mark = ",")
-body=paste0(body,"Open Trades Expected by Algorithm",tableHTML(trades.selected.columns,border=1),"<br>")
-
-pattern=paste("*trades*",tolower(args[2]),"*",sep="")
-actualRedis=RTrade::createPNLSummary(0,pattern,kBackTestStartDate,kBackTestCloseAllDate)
-openTrades=filter(actualRedis,is.na(exittime)) %>% select(symbol,trade,entrysize,entrytime,entryprice,exittime,mtmprice=exitprice,pnl=netprofit)
-openTrades$entryprice=specify_decimal(openTrades$entryprice,2)
-openTrades$pnl=formatC(specify_decimal(openTrades$pnl,0),format="d",big.mark = ",")
-
-body= paste0(body,"Open Trades In Algorithm logs.","</p>", tableHTML(openTrades,border = 1),"<br>")
-
-actualRedis=RTrade::createPNLSummary(args[3],pattern,kBackTestStartDate,kBackTestCloseAllDate)
-actualRedis=actualRedis[actualRedis$netposition!=0,]
-redispositions=aggregate(netposition~symbol,actualRedis,FUN=sum)
-strategyPositions=filter(trades,is.na(exittime))
-strategyPositions=aggregate(size~symbol,strategyPositions,FUN=sum)
-positions=merge(redispositions,strategyPositions,all.x = TRUE,all.y = TRUE)
-positions$netposition=ifelse(is.na(positions$netposition),0,positions$netposition)
-positions$size=ifelse(is.na(positions$size),0,positions$size)
-names(positions)=c("symbol","RedisPosition","StrategyRequirement")
-excessInRedis=filter(positions,(RedisPosition>0 & RedisPosition > StrategyRequirement)| (RedisPosition<0 & RedisPosition < StrategyRequirement))
-excessInRedis$excess=excessInRedis$RedisPosition-excessInRedis$StrategyRequirement
-
-if(nrow(excessInRedis)>0){
-        body= paste0(body,"The following positions are superflous to strategy and should be immediately corrected manually:",args[2],".", tableHTML(excessInRedis,border = 1),"<br>")
+#### EXECUTION SUMMARY ####
+if(!kBackTest){
+        generateExecutionSummary(trades,kBackTestStartDate,kBackTestCloseAllDate,args[2],args[3],kSubscribers,kBrokerage,kCommittedCapital,kMarginOnUnrealized = FALSE)
 }
-
-shortInRedis=filter(positions,(StrategyRequirement>0 & RedisPosition < StrategyRequirement)| (StrategyRequirement<0 & RedisPosition > StrategyRequirement))
-shortInRedis$shortfall=shortInRedis$StrategyRequirement-shortInRedis$RedisPosition
-if(nrow(shortInRedis)>0){
-        body= paste0(body," The following positions are required by strategy but not executed as per execution logs:",args[2],". </p>", tableHTML(shortInRedis,border=1),"<br>")
-}
-
-mime() %>%
-        to("psharma@incurrency.com") %>%
-        from("reporting@incurrency.com") %>%
-        subject(paste0("Run Summary for ",args[2])) %>% 
-        html_body(body) %>% 
-        send_message()
-
 #### PRINT RUN TIME ####
 timer.end=Sys.time()
 runtime=timer.end-timer.start
