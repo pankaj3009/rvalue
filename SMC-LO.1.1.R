@@ -421,7 +421,7 @@ if(kBackTest){
 
 #### EXECUTION SUMMARY ####
 if(!kBackTest){
-        generateExecutionSummary(trades,unique(signals$date),kBackTestStartDate,kBackTestCloseAllDate,args[2],args[3],kSubscribers,kBrokerage,kCommittedCapital,kMarginOnUnrealized = FALSE,realtime=TRUE)
+        generateExecutionSummary(trades,unique(c(signals$date,as.POSIXct(strftime(Sys.Date(),tz=kTimeZone)))),kBackTestStartDate,kBackTestCloseAllDate,args[2],args[3],kSubscribers,kBrokerage,kCommittedCapital,kMarginOnUnrealized = FALSE,realtime=FALSE)
 }
 #### PRINT RUN TIME ####
 timer.end=Sys.time()
