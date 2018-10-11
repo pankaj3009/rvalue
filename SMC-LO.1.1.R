@@ -72,6 +72,17 @@ kBackTestEndDate = strftime(adjust("India", as.Date(kBackTestEndDate, tz = kTime
 kBackTestStartDate = strftime(adjust("India", as.Date(kBackTestStartDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
 kBackTestCloseAllDate = strftime(adjust("India", as.Date(kBackTestCloseAllDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
 
+today=strftime(Sys.Date(),tz=kTimeZone,format="%Y-%m-%d")
+bod<-paste(today, "09:08:00 IST",sep=" ")
+eod<-paste(today, "15:30:00 IST",sep=" ")
+
+if(Sys.time()<bod){
+        args[1]=1
+}else if(Sys.time()<eod){
+        args[1]=2
+}else{
+        args[1]=3
+}
 
 logger <- create.logger()
 logfile(logger) <- kLogFile
@@ -253,7 +264,7 @@ if(nrow(trades)>0){
 
 #### MAP TO DERIVATIES ####
 #### WRITE TO REDIS ####
-if(!kBackTest & kWriteToRedis){
+if(!kBackTest & kWriteToRedis & args[1]==2){
         saveRDS(trades,file=paste(args[2],"_trades_",strftime(Sys.time(),format="%Y-%m-%d %H-%M-%S"),".rds",sep=""))
         saveRDS(signals,file=paste(args[2],"_signals_",strftime(Sys.time(),format="%Y-%m-%d %H-%M-%S"),".rds",sep=""))
         referencetime=adjust("India",Sys.Date()-1,bdc=2)
