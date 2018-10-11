@@ -275,6 +275,7 @@ if(!kBackTest & kWriteToRedis & args[1]==2){
                           TriggerPrice="0",
                           Scale="TRUE",
                           TIF="GTC",
+                          OrderTime=Sys.time(),
                           OrderReference=tolower(args[2]),
                           stringsAsFactors = FALSE)
         placeRedisOrder(trades,referencetime,order,args[3],setLimitPrice=TRUE)
