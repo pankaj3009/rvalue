@@ -1,5 +1,4 @@
 timer.start=Sys.time()
-library(TTR)
 library(log4r)
 library(RTrade)
 library(tableHTML)
@@ -16,61 +15,17 @@ if (length(args.commandline) > 0) {
 }
 
 ### Read Parameters ###
-redisConnect()
-redisSelect(1)
-
 if (length(args) > 1) {
-        static <- redisHGetAll(toupper(args[2]))
+        static <- readRDS(paste(tolower(args[2]),".rds",sep=""))
 } else{
-        static <- redisHGetAll("SMC-LO")
+        static <- readRDS("value.rds")
+        args<-c(1,tolower(static$core$kStrategy))
 }
 
-newargs <- unlist(strsplit(static$args, ","))
-if (length(args) <= 1 && length(newargs > 1)) {
-        args <- newargs
-}
-
-redisClose()
-kBackTest <- as.logical(static$BackTest)
-kWriteToRedis <- as.logical(static$WriteToRedis)
-kBackTestStartDate <- static$BackTestStartDate
-kBackTestEndDate <- static$BackTestEndDate
-kBackTestCloseAllDate <- static$BackTestCloseAllDate
-kTimeZone <- static$TimeZone
-kValueBrokerage <- as.numeric(static$BrokerageOnValue) / 100
-kPerContractBrokerage=0
-kHomeDirectory = static$HomeDirectory
-kCommittedCapital = as.numeric(static$CommittedCapital)
-kLogFile = static$LogFile
-kStrategy = args[2]
-kExclusionList=static$ExclusionList
-kRequireOverSold = as.logical(static$RequireOversold)
-kRedisDatabase = as.numeric(args[3])
-kExclusionList<-strsplit(kExclusionList[1],",")[[1]]
-kDF4Files=static$DF4Files
-df4files=strsplit(kDF4Files[1],",")[[1]]
-kDeployMonths = as.numeric(static$DeployMonths)
-kCapitalGrowth = as.numeric(static$CapitalGrowth) / 100
-kMinMarketCap = as.numeric(static$MinMarketCap)
-kMinOrderValue = as.numeric(static$MinOrderValue)
-kUpside = as.numeric(static$Upside)
-kThresholdROCE = as.numeric(static$ThresholdROCE)
-kThresholdDividedPayoutPercent = as.numeric(static$ThresholdDividedPayoutPercent)
-kRSIEntry = as.numeric(static$RSIEntry)
-kRSIExit = as.numeric(static$RSIExit)
-kR2Fit = as.numeric(static$R2Fit)
-kSlope = as.numeric(static$Slope)
-kTradesPerMonth = as.numeric(static$TradesPerMonth)
-kExitDays = as.numeric(static$ExitDays)
-kInvestmentReturn = as.numeric(static$InvestmentReturn)
-kOverdraftPenalty=as.numeric(static$OverdraftPenalty)
-kMargin=1
-kBrokerage=fromJSON(static$Brokerage)
-kSubscribers=fromJSON(static$Subscribers)
-kWorkingDaysForSlope = as.numeric(static$WorkingDaysForSlope)
-kBackTestEndDate = strftime(adjust("India", as.Date(kBackTestEndDate, tz = kTimeZone), bdc = 2), "%Y-%m-%d")
-kBackTestStartDate = strftime(adjust("India", as.Date(kBackTestStartDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
-kBackTestCloseAllDate = strftime(adjust("India", as.Date(kBackTestCloseAllDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
+static$core$kBackTestEndDate = strftime(adjust("India", as.Date(static$core$kBackTestEndDate, tz = kTimeZone), bdc = 2), "%Y-%m-%d")
+static$core$kBackTestStartDate = strftime(adjust("India", as.Date(static$core$kBackTestStartDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
+static$kBackTestCloseAllDate=min(as.character(Sys.Date()),static$kBackTestCloseAllDate)
+static$kBackTestCloseAllDate = strftime(adjust("India", as.Date(static$kBackTestCloseAllDate, tz = kTimeZone), bdc = 0), "%Y-%m-%d")
 
 today=strftime(Sys.Date(),tz=kTimeZone,format="%Y-%m-%d")
 bod<-paste(today, "09:08:00 IST",sep=" ")
@@ -85,16 +40,19 @@ if(Sys.time()<bod){
 }
 
 logger <- create.logger()
-logfile(logger) <- kLogFile
+logfile(logger) <- static$core$kLogFile
 level(logger) <- 'INFO'
 levellog(logger, "INFO", "Starting EOD Scan")
 
 holidays=readRDS(paste(datafolder,"static/holidays.rds",sep=""))
 RQuantLib::addHolidays("India",holidays)
 
-if(!is.null(kHomeDirectory)){
-        setwd(kHomeDirectory)
+if(get_os()=="windows"){
+        setwd(static$core$kHomeDirectoryWindows)
+}else if(get_os()=="linux"){
+        setwd(static$core$kHomeDirectoryLinux)        
 }
+
 
 #### FUNCTIONS ####
 
@@ -108,7 +66,7 @@ MonthsSinceStart <- function(endDate, startDate) {
 }
 
 CalculateNPV <-function(portfolio,date){
-        portfolio=portfolio[portfolio$entrytime<date & (portfolio$exittime>date|portfolio$exitreason=="Open"),]
+        portfolio=portfolio[portfolio$entrytime<=date & (portfolio$exittime>date|portfolio$exitreason=="Open"),]
         for(l in seq_len(nrow(portfolio))){
                 # if(!exists(portfolio$symbol[l])){
                 #         assign(portfolio$symbol[l],loadSymbol(portfolio$symbol[l]))
@@ -123,14 +81,14 @@ CalculateNPV <-function(portfolio,date){
 #### GENERATE SYMBOLS  ####
 symbolchange=getSymbolChange()
 symbols=data.frame()
-for (f in df4files){
+for (f in static$kDF4Files){
         startdate=paste(strsplit(f,"_")[[1]][1],"-06-30",sep="")
-        startdate=as.POSIXct(startdate,tz="Asia/Kolkata")
+        startdate=as.POSIXct(startdate,tz=static$core$kTimeZone)
         enddate=startdate+365*24*60*60
         load(f)
-        df4 = df4[df4$UPSIDE > (kUpside - 25) & df4$ROCE>kThresholdROCE & df4$DIVIDENDPAYOUTPERC>kThresholdDividedPayoutPercent &  df4$MCAP > kMinMarketCap, ]
+        df4 = df4[df4$UPSIDE > (static$kUpside - 25) & df4$ROCE>static$kThresholdROCE & df4$DIVIDENDPAYOUTPERC>static$kThresholdDividendPayoutPercent &  df4$MCAP > static$kMinMarketCap, ]
         df4$NEWTICKER=sapply(df4$TICKER,function(x) last(linkedsymbols(symbolchange,x)$symbol))
-        symbols=rbind(symbols,data.frame(symbol=df4$NEWTICKER,startdate=rep(startdate,length(df4$NEWTICKER)),enddate=rep(enddate,length(df4$NEWTICKER)),value=df4$THEORETICALVALUE, sharesoutstandingon=as.POSIXct(as.character(df4$sharesOutstandingDate),tz="Asia/Kolkata"),financialdate=as.POSIXct(as.character(df4$FINDATE),tz=kTimeZone), stringsAsFactors = FALSE))
+        symbols=rbind(symbols,data.frame(symbol=df4$NEWTICKER,startdate=rep(startdate,length(df4$NEWTICKER)),enddate=rep(enddate,length(df4$NEWTICKER)),value=df4$THEORETICALVALUE, sharesoutstandingon=as.POSIXct(as.character(df4$sharesOutstandingDate),tz=static$core$kTimeZone),financialdate=as.POSIXct(as.character(df4$FINDATE),tz=static$core$kTimeZone), stringsAsFactors = FALSE))
 }
 symbolslist=list()
 for(i in 1:nrow(symbols)){
@@ -147,14 +105,14 @@ names(symbolslist)=paste(names(symbolslist),"_STK___",sep="")
 print(paste("Number of symbols:",length(symbolslist)))
 
 #### GENERATE SIGNALS ####
-StatementDate = seq.Date(from = as.Date(kBackTestStartDate),to = min(Sys.Date(),as.Date(kBackTestCloseAllDate)),1)
-TargetPortfolioValue = data.frame(date=as.POSIXct(as.character(StatementDate),tz=kTimeZone),value=rep(kCommittedCapital,length(StatementDate)))
-MonthsElapsed = sapply(StatementDate, MonthsSinceStart,as.Date(kBackTestStartDate)) +1
-TargetPortfolioValue$value = pmin(TargetPortfolioValue$value * MonthsElapsed / kDeployMonths,TargetPortfolioValue$value)
-Interest = TargetPortfolioValue$value * kCapitalGrowth / 365
+StatementDate = seq.Date(from = as.Date(static$core$kBackTestStartDate),to = min(Sys.Date(),as.Date(static$kBackTestCloseAllDate)),1)
+TargetPortfolioValue = data.frame(date=as.POSIXct(as.character(StatementDate),tz=static$core$kTimeZone),value=rep(static$core$kCommittedCapital,length(StatementDate)))
+MonthsElapsed = sapply(StatementDate, MonthsSinceStart,as.Date(static$core$kBackTestStartDate)) +1
+TargetPortfolioValue$value = pmin(TargetPortfolioValue$value * MonthsElapsed / static$kDeployMonths,TargetPortfolioValue$value)
+Interest = TargetPortfolioValue$value * static$kCapitalGrowth / 365
 Interest = cumsum(Interest)
 TargetPortfolioValue$value = TargetPortfolioValue$value + Interest
-cutoff=as.character(as.Date(kBackTestStartDate)-kWorkingDaysForSlope*1.5)
+cutoff=as.character(as.Date(static$core$kBackTestStartDate)-static$kWorkingDaysForSlope*1.5)
 buycounter=1
 signals=data.frame()
 
@@ -162,25 +120,25 @@ for (i in 1:length(symbolslist)){
         print(paste("Processing",i,names(symbolslist)[i],sep=":"))
         symbol=names(symbolslist)[i]
         md=loadSymbol(symbol,days=1000000)
-        md=md[md$date>=cutoff,]
-        if(nrow(md)>0){
+        md=md[md$date>=cutoff & md$date <= static$kBackTestCloseAllDate,]
+        if(nrow(md)>static$kWorkingDaysForSlope){
                 md$daysinhistory=as.numeric(rownames(md))
                 md$month=strftime(md$date,format="%y%m")
-                regress=regress(md$asettle,TRUE,kWorkingDaysForSlope)
+                regress=regress(md$asettle,TRUE,static$kWorkingDaysForSlope)
                 md$slope=regress[,1]
                 md$r2=regress[,2]
-                md$predict=lmprediction(md$asettle,period=kWorkingDaysForSlope)
+                md$predict=lmprediction(md$asettle,period=static$kWorkingDaysForSlope)
                 md$rsi=RSI(md$asettle, 2)
-                if(!kRequireOverSold){
+                if(!static$kRequireOverSold){
                         md$oversold=TRUE
                 }else{
-                        md$oversold=runSum(RSI(md$asettle, 2) < kRSIEntry, 2) == 2
+                        md$oversold=runSum(RSI(md$asettle, 2) < static$kRSIEntry, 2) == 2
                         
                 }
-                md$hhv=hhv(md$asettle,-kWorkingDaysForSlope)
+                md$hhv=hhv(md$asettle,-static$kWorkingDaysForSlope)
                 md$drawdown= (md$hhv-md$asettle)/md$hhv
-                md$slopereturn.refperiod= ((1+md$slope)^kWorkingDaysForSlope-1) 
-                md$return.refperiod=(md$asettle-Ref(md$asettle,-kWorkingDaysForSlope))/Ref(md$asettle,-kWorkingDaysForSlope)
+                md$slopereturn.refperiod= ((1+md$slope)^static$kWorkingDaysForSlope-1) 
+                md$return.refperiod=(md$asettle-Ref(md$asettle,-static$kWorkingDaysForSlope))/Ref(md$asettle,-static$kWorkingDaysForSlope)
                 shortlists=symbolslist[[symbol]]
                 md$referencevalue=0
                 md$referencesplitadjust=1
@@ -195,10 +153,10 @@ for (i in 1:length(symbolslist)){
                         md[md$date>=shortlist$startdate & md$date<=shortlist$enddate, 'referencevalue']=shortlist$value[1]/md[md$date>=shortlist$startdate & md$date<=shortlist$enddate, 'referencesplitadjust'] 
                 }
                 #md$buy=ifelse(md$eligible==1 & md$date<kBackTestEndDate & md$r2>kR2Fit/100 & md$slopereturn.refperiod >kSlope/100 & md$return.refperiod >kSlope/100 & md$asettle<md$predict & md$asettle>0.7*md$predict & md$date > symbols$financialdate[i] + 90*24*60*60 & md$oversold & md$rsi<kRSIEntry & (md$referencevalue-md$asettle)*100/md$asettle>kUpside & md$drawdown<1,1,0)
-                md$buy=ifelse(md$eligible==1 & md$date<kBackTestEndDate & md$r2>kR2Fit/100 & md$slopereturn.refperiod >kSlope/100 & md$return.refperiod >kSlope/100 & md$date > symbols$financialdate[i] + 90*24*60*60 & md$oversold & md$rsi<kRSIEntry & (md$referencevalue-md$asettle)*100/md$asettle>kUpside & md$drawdown<1,1,0)
+                md$buy=ifelse(md$eligible==1 & md$date<static$core$kBackTestEndDate & md$r2>static$kR2Fit/100 & md$slopereturn.refperiod >static$kSlope/100 & md$return.refperiod >static$kSlope/100 & md$date > symbols$financialdate[i] + 90*24*60*60 & md$oversold & md$rsi<static$kRSIEntry & (md$referencevalue-md$asettle)*100/md$asettle>static$kUpside & md$drawdown<1,1,0)
                 md$buycount<-ave(md$buy, md$month, FUN = cumsum)
                 md$buy=ifelse(md$buycount==1 & Ref(md$buycount,-1)==0,1,0) # this gives unique  value to buy signal for md
-                md$sell=ifelse(md$rsi>kRSIExit,1,0)
+                md$sell=ifelse(md$rsi>static$kRSIExit,1,0)
                 md$sellprice=md$asettle
                 md$buyprice=md$asettle
                 md$positionscore=md$rsi
@@ -211,16 +169,21 @@ for (i in 1:length(symbolslist)){
 saveRDS(signals,file="signals.rds")
 
 signals.filtered=na.exclude(signals)
-signals.filtered=signals.filtered[signals.filtered$date>=as.POSIXct(kBackTestStartDate,tz=kTimeZone) & signals.filtered$date<=as.POSIXct(kBackTestCloseAllDate,tz=kTimeZone) & (signals.filtered$buy>0 |signals.filtered$sell >0),]
+signals.filtered=signals.filtered[signals.filtered$date>=as.POSIXct(static$core$kBackTestStartDate,tz=static$core$kTimeZone) & signals.filtered$date<=as.POSIXct(static$kBackTestCloseAllDate,tz=static$core$kTimeZone) & (signals.filtered$buy>0 |signals.filtered$sell >0),]
 signals.filtered=signals.filtered[order(signals.filtered$date,signals.filtered$positionscore),]
 
 #### GENERATE TRADES ####
 trades=data.frame()
 trades=data.frame(symbol=signals.filtered$symbol,trade="BUY",size=0,entrytime=signals.filtered$date,entryprice=signals.filtered$asettle,exitreason="Open",bars=0,buy=signals.filtered$buy,stringsAsFactors = FALSE)
+# handle exlcusions if any
+trades$coresymbol=sapply(strsplit(trades$symbol,"_"),"[",1)
+includeIndices=match(trades$coresymbol,static$kExclusionList)
+includeIndices=is.na(includeIndices)
+trades=trades[includeIndices,]
 tradesbuy=trades[trades$buy==1,]
 tradessell=trades[trades$buy==0,]
 tradessell=dplyr::select(tradessell,symbol=symbol,exittime=entrytime,exitprice=entryprice)
-tradesbuy$exitdatepotential=tradesbuy$entrytime+kExitDays*24*60*60
+tradesbuy$exitdatepotential=tradesbuy$entrytime+static$kExitDays*24*60*60
 tradesbuy.sell=dplyr::inner_join(tradesbuy,tradessell,by=c("symbol"))
 tradesbuy.sell.closed=dplyr::filter(tradesbuy.sell,exittime>=exitdatepotential)
 tradesbuy.sell.closed=dplyr::group_by(tradesbuy.sell.closed,.dots=c("symbol","entrytime"))%>%arrange(exittime)
@@ -233,6 +196,8 @@ trades=dplyr::bind_rows(tradesbuy.sell.closed,trades.open)
 trades=dplyr::arrange(trades,entrytime)
 trades=dplyr::select(trades,symbol,trade,size,entryprice,entrytime,exitprice,exittime,bars,exitreason)
 trades=as.data.frame(trades)
+
+# update size based on available liquidity
 if(nrow(trades)>0){
         trades$size=0
         currentmonth=""
@@ -245,13 +210,14 @@ if(nrow(trades)>0){
                         positionsThisMonth=0
                 }
                 gap=0
-                if(positionsThisMonth<kTradesPerMonth){
-                        out = CalculateNPV(trades,trades$entrytime[i])
+                if(positionsThisMonth<static$kTradesPerMonth){
+                        #out = CalculateNPV(trades,trades$entrytime[i]-1)
+                        out = CalculateNPV(trades[1:i,],trades$entrytime[i])
                         npv=out[[1]]
                         gap=TargetPortfolioValue[TargetPortfolioValue$date==trades$entrytime[i],c("value")]-npv
                 }        
                 if(gap>0){
-                        sizevalue=gap/(kTradesPerMonth-positionsThisMonth)
+                        sizevalue=gap/(static$kTradesPerMonth-positionsThisMonth)
                         size=round(sizevalue/trades$entryprice[i])
                         trades$size[i]=size
                         positionsThisMonth=positionsThisMonth+1
@@ -259,37 +225,38 @@ if(nrow(trades)>0){
         }
         saveRDS(trades,file="trades.rds")
         trades=dplyr::filter(trades,size>0)
-        trades=revalPortfolio(trades,kBrokerage,realtime=FALSE)
+        trades=revalPortfolio(trades,static$core$kBrokerage,realtime=static$core$kRealTime)
+        trades$bars=businessDaysBetween("India",as.Date(strftime(trades$entrytime,"%Y-%m-%d",tz=static$core$kTimeZone)),as.Date(strftime(trades$exittime,format="%Y-%m-%d",tz=static$core$kTimeZone)))
 }
 
 #### MAP TO DERIVATIES ####
 #### WRITE TO REDIS ####
-if(!kBackTest & kWriteToRedis & args[1]==2){
+if(!static$core$kBackTest & static$core$kWriteToRedis & args[1]==2){
         saveRDS(trades,file=paste(args[2],"_trades_",strftime(Sys.time(),format="%Y-%m-%d %H-%M-%S"),".rds",sep=""))
         saveRDS(signals,file=paste(args[2],"_signals_",strftime(Sys.time(),format="%Y-%m-%d %H-%M-%S"),".rds",sep=""))
         referencetime=adjust("India",Sys.Date()-1,bdc=2)
         referencetime=strftime(referencetime,format="%Y-%m-%d")
-        referencetime=as.POSIXct(referencetime,tz=kTimeZone)
+        referencetime=as.POSIXct(referencetime,tz=static$core$kTimeZone)
         order=data.frame( OrderType="LMT",
                           OrderStage="INIT",
                           TriggerPrice="0",
                           Scale="TRUE",
                           TIF="GTC",
                           OrderTime=Sys.time(),
-                          OrderReference=tolower(args[2]),
+                          OrderReference=tolower(static$core$kStrategy),
                           stringsAsFactors = FALSE)
-        placeRedisOrder(trades,referencetime,order,args[3],setLimitPrice=TRUE)
+        placeRedisOrder(trades,referencetime,order,static$core$kRedisDatabase,setLimitPrice=TRUE)
 }
 
 #### BACKTEST ####
-if(kBackTest){
+if(static$core$kBackTest){
         bizdays=unique(signals$date)
-        if(kBackTestCloseAllDate<Sys.Date()){
-                trades[which(is.na(trades$exittime)),'exittime']=as.POSIXct(kBackTestCloseAllDate,tz=kTimeZone)
+        if(static$kBackTestCloseAllDate<Sys.Date()){
+                trades[which(is.na(trades$exittime)),'exittime']=as.POSIXct(static$kBackTestCloseAllDate,tz=static$core$kTimeZone)
         }
-        bizdays=bizdays[bizdays>=as.POSIXct(kBackTestStartDate,tz=kTimeZone) & bizdays<=as.POSIXct(kBackTestCloseAllDate,tz=kTimeZone)]
+        bizdays=bizdays[bizdays>=as.POSIXct(static$core$kBackTestStartDate,tz=static$core$kTimeZone) & bizdays<=as.POSIXct(static$kBackTestCloseAllDate,tz=static$core$kTimeZone)]
         pnl<-data.frame(bizdays,realized=0,unrealized=0,brokerage=0)
-        cumpnl<-CalculateDailyPNL(trades,pnl,kBrokerage)
+        cumpnl<-CalculateDailyPNL(trades,pnl,static$core$kBrokerage)
         
         # calculate sharpe
         CumPNL <-  cumpnl$realized + cumpnl$unrealized - cumpnl$brokerage
@@ -300,15 +267,15 @@ if(kBackTest){
         
         # calculate IRR
         cumpnl$cashflow[nrow(cumpnl)]=cumpnl$cashflow[nrow(cumpnl)]+(cumpnl$longnpv+cumpnl$shortnpv)[nrow(cumpnl)]
-        xirr=xirr(cumpnl$cashflow,cumpnl$bizdays,trace = TRUE)
+        xirr=xirr(cumpnl$cashflow,cumpnl$bizdays)
         
         # print stats
         print(paste("# Trades:",nrow(trades)))
         print(paste("Profit as Sum of Equity Trades:",specify_decimal(sum(DailyPNLWorking),0)))
-        print(paste("Win Ratio:",sum(trades$abspnl>0)*100/nrow(trades)))
-        print(paste("Avg % Gain Per Winning Trade:",specify_decimal(mean(trades$netpercentprofit[trades$netpercentprofit>0])*100,1)))
-        print(paste("Avg % Loss Per Losing Trade:",specify_decimal(mean(trades$netpercentprofit[trades$netpercentprofit<0])*100,1)))
-        print(paste("Avg % Profit Per Trade:",specify_decimal(mean(trades$netpercentprofit)*100,1)))
+        print(paste("Win Ratio:",sum(trades$pnl>0)*100/nrow(trades)))
+        print(paste("Avg % Gain Per Winning Trade:",specify_decimal(mean(trades$pnl[trades$pnl>0]/(trades$entryprice*trades$size)[trades$pnl>0])*100,1)))
+        print(paste("Avg % Loss Per Losing Trade:",specify_decimal(mean(trades$pnl[trades$pnl<0]/(trades$entryprice*trades$size)[trades$pnl<0])*100,1)))
+        print(paste("Avg % Profit Per Trade:",specify_decimal(mean(trades$pnl/(trades$entryprice*trades$size))*100,1)))
         print(paste("Avg Holding Days:",sum(trades$bars)/nrow(trades)))
         
         # graph portfolio npv, target and gap
@@ -424,18 +391,39 @@ if(kBackTest){
                 bty="n"
         )
         
+        #Deployed Cash
+        
+        plot(x = cumpnl$bizdays,
+             y = cumpnl$cashdeployed,
+             type = 'l',main="Deployed Cash",xlab="Date",ylab="Deployed Cash",axes=FALSE)
+        axis.POSIXct(
+                1,
+                cumpnl$bizdays,
+                at = seq(
+                        min(cumpnl$bizdays),
+                        max(cumpnl$bizdays) + 90,
+                        by = "3 mon"
+                ),
+                format = "%m-%Y",
+                labels=TRUE
+        )
+        minProfit=min(cumpnl$cashdeployed)
+        maxProfit=max(cumpnl$cashdeployed)
+        points=pretty(seq(minProfit,maxProfit,by=(maxProfit-minProfit)/5))
+        axis(2,at=points,labels=paste(points/1000000,"M",sep=""),las=1)
+        
         # benchmark vs strategy
         # Cumul                 Year 1 Year 2 Year 3 ....
         # IRR
         # Sharpe
         # YE Equity
 }
-
 #### EXECUTION SUMMARY ####
-if(!kBackTest){
-        generateExecutionSummary(trades,unique(c(signals$date,as.POSIXct(strftime(Sys.Date(),tz=kTimeZone)))),kBackTestStartDate,kBackTestCloseAllDate,args[2],args[3],kSubscribers,kBrokerage,kCommittedCapital,kMarginOnUnrealized = FALSE,realtime=TRUE)
+if(!static$core$kBackTest){
+        generateExecutionSummary(trades,unique(c(signals$date,as.POSIXct(strftime(Sys.Date(),tz=kTimeZone)))),static$core$kBackTestStartDate,static$kBackTestCloseAllDate,static$core$kStrategy,static$core$kSubscribers,static$core$kBrokerage,static$core$kCommittedCapital,kMargin=static$core$kMargin,kMarginOnUnrealized = FALSE,realtime=FALSE)
 }
 #### PRINT RUN TIME ####
+#rm(args)
 timer.end=Sys.time()
 runtime=timer.end-timer.start
 print(runtime)
