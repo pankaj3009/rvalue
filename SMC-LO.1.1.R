@@ -96,7 +96,7 @@ for(i in 1:nrow(symbols)){
         if(length(grep(symbol,symbolslist))==1){
                 # append to list
                 symbolslist[[symbol]]=rbind(symbolslist[[symbol]],symbols[i,])
-               
+                
         }else{
                 symbolslist[[symbol]]=symbols[i,]
         }
@@ -420,7 +420,11 @@ if(static$core$kBackTest){
 }
 #### EXECUTION SUMMARY ####
 if(!static$core$kBackTest){
-        generateExecutionSummary(trades,unique(c(signals$date,as.POSIXct(strftime(Sys.Date(),tz=kTimeZone)))),static$core$kBackTestStartDate,static$kBackTestCloseAllDate,static$core$kStrategy,static$core$kSubscribers,static$core$kBrokerage,static$core$kCommittedCapital,kMargin=static$core$kMargin,kMarginOnUnrealized = FALSE,realtime=FALSE)
+        if(args[1]>1){
+                generateExecutionSummary(trades,unique(c(signals$date,as.POSIXct(strftime(Sys.Date(),tz=kTimeZone)))),static$core$kBackTestStartDate,static$kBackTestCloseAllDate,static$core$kStrategy,static$core$kSubscribers,static$core$kBrokerage,static$core$kCommittedCapital,kMargin=static$core$kMargin,kMarginOnUnrealized = FALSE,realtime=TRUE)
+        }else{
+                generateExecutionSummary(trades,unique(signals$date),static$core$kBackTestStartDate,static$kBackTestCloseAllDate,static$core$kStrategy,static$core$kSubscribers,static$core$kBrokerage,static$core$kCommittedCapital,kMargin=static$core$kMargin,kMarginOnUnrealized = FALSE,realtime=FALSE)
+        }
 }
 #### PRINT RUN TIME ####
 #rm(args)
